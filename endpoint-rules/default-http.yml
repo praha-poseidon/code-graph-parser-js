@@ -1,0 +1,55 @@
+---
+id: browser-fetch
+endpointType: HTTP
+direction: outbound
+locate:
+  nodeType: CallExpression
+  callee: fetch
+extract:
+  method:
+    from: arguments[1].properties.method
+    default: GET
+    transforms: [upperCase]
+  path:
+    from: arguments[0]
+    trace: true
+normalize:
+  matchIdentity: "HTTP:{method}:{normalizedPath}"
+---
+id: axios-method-shortcut
+endpointType: HTTP
+direction: outbound
+locate:
+  nodeType: CallExpression
+  callee:
+    regex: "^(axios|api|request|requests|http|client)\\.(get|post|put|delete|del|patch)$"
+extract:
+  method:
+    from: callee.property
+    transforms: [upperCase, httpMethod]
+  path:
+    from: arguments[0]
+    trace: true
+normalize:
+  matchIdentity: "HTTP:{method}:{normalizedPath}"
+---
+id: axios-config-object
+endpointType: HTTP
+direction: outbound
+locate:
+  nodeType: CallExpression
+  callee:
+    anyOf: [axios, request, apiClient.request, client.request]
+extract:
+  method:
+    from: arguments[0].properties.method
+    default: GET
+    transforms: [upperCase]
+  path:
+    from:
+      anyOf:
+        - arguments[0].properties.url
+        - arguments[0].properties.path
+    trace: true
+normalize:
+  matchIdentity: "HTTP:{method}:{normalizedPath}"

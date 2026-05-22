@@ -1,0 +1,27 @@
+{
+  "name": "frontend-code-graph-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Static graph parser for React frontend projects.",
+  "bin": {
+    "frontend-code-graph": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.2",
+    "ts-morph": "^24.0.0",
+    "typescript": "^5.6.3",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
