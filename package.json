@@ -1,5 +1,5 @@
 {
-  "name": "frontend-code-graph-engine",
+  "name": "code-graph-parser-frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
