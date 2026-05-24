@@ -1,4 +1,4 @@
-# Code Graph Parser Frontend
+# Code Graph Parser JS
 
 Static parser for React projects that emits the same high-level graph shape used by the Java code graph engine:
 
@@ -46,7 +46,7 @@ Then configure the Java engine or app with:
 
 ```bash
 -Dcodegraph.parser.process.languages=typescript
--Dcodegraph.parser.process.typescript.command="node '/path/to/code-graph-parser-frontend/dist/cli.js' --stdio"
+-Dcodegraph.parser.process.typescript.command="node '/path/to/code-graph-parser-js/dist/cli.js' --stdio"
 ```
 
 When the Java app receives a `.ts` or `.tsx` file change, it infers `typescript`, sends a `ParseRequest` to this CLI, receives `GraphDelta`, and writes the graph through the configured storage adapter.
