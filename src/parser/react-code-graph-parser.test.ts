@@ -231,6 +231,10 @@ test("adds outbound endpoints from static-extract facts with trace rules", async
       "const config = {",
       "  get(key: string) { return key; }",
       "};",
+      "export function renderDiagram(content: string) {",
+      "  const url = `${serverUrl}/svg/${content}`;",
+      "  return fetch(url);",
+      "}",
       "export function loadUsers() {",
       "  return fetch(config.get('usersUrl'));",
       "}"
@@ -281,6 +285,7 @@ test("adds outbound endpoints from static-extract facts with trace rules", async
   const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/api/static-users");
   assert.ok(endpoint);
   assert.equal(endpoint.attributes?.source, "static-extract");
+  assert.ok(result.graph.endpoints.some((item) => item.matchIdentity === "HTTP:GET:/svg/{param}"));
   assertGraphHasRelationship(
     result,
     "FUNCTION_TO_ENDPOINT",

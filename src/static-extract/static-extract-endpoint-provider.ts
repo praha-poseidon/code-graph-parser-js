@@ -56,7 +56,7 @@ export class StaticExtractEndpointProvider {
     const pathValue = fact.fields.path ?? fact.fields.url ?? fact.fields.route;
     if (!pathValue) return;
 
-    const method = (fact.fields.method ?? "GET").toUpperCase();
+    const method = normalizeHttpMethod(fact.fields.method, fact.fields.client);
     const normalizedPath = normalizeHttpPath(pathValue);
     const matchIdentity = `HTTP:${method}:${normalizedPath}`;
     const projectFilePath = fact.projectFilePath;
@@ -120,4 +120,12 @@ function findEnclosingFunction(functions: CodeFunction[], projectFilePath: strin
 
 function languageOf(filePath: string): NodeLanguage {
   return /\.(ts|tsx)$/i.test(filePath) ? "typescript" : "javascript";
+}
+
+function normalizeHttpMethod(method: string | undefined, client: string | undefined): string {
+  const value = (method ?? "").toUpperCase();
+  if (!value || value === "FETCH" || value === "AXIOS") return "GET";
+  if (value === "DEL") return "DELETE";
+  if (["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(value)) return value;
+  return client?.toLowerCase() === "fetch" ? "GET" : value;
 }

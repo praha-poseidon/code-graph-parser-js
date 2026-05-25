@@ -17,7 +17,8 @@ export function normalizeHttpPath(pathValue: string): string {
   value = value.replace(/\/+/g, "/");
   value = value.replace(/:([A-Za-z_$][\w$]*)/g, "{param}");
   value = value.replace(/\$\{[^}]+}/g, "{param}");
-  value = value.replace(/\{[A-Za-z_$][\w$]*}/g, "{param}");
+  value = value.replace(/\{[^}/]+}/g, "{param}");
+  value = value.replace(/^(?:\{param})+(?=\/[^{}]+)/, "");
   if (!value.startsWith("/")) {
     value = `/${value}`;
   }
