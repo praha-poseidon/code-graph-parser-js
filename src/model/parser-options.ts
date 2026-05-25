@@ -3,6 +3,11 @@ export interface ParserOptions {
   projectName?: string;
   tsConfigPath?: string;
   endpointRulesDir?: string;
+  ruleSources?: string[];
+  traceRuleSources?: string[];
+  externalValues?: Record<string, Record<string, string[]>>;
+  externalValuesFile?: string;
+  staticExtractBuiltinRules?: boolean;
   include?: string[];
   exclude?: string[];
   gitRepoUrl?: string;

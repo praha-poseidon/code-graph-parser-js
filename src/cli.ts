@@ -10,6 +10,10 @@ interface CliArgs {
   project?: string;
   out?: string;
   rules?: string;
+  serRule?: string[];
+  traceRule?: string[];
+  externalValues?: string;
+  staticExtractBuiltin?: boolean;
   tsconfig?: string;
   projectName?: string;
   request?: string;
@@ -37,7 +41,11 @@ async function main(): Promise<void> {
     projectRoot,
     projectName: args.projectName,
     tsConfigPath: args.tsconfig ? path.resolve(args.tsconfig) : undefined,
-    endpointRulesDir: rulesDir
+    endpointRulesDir: rulesDir,
+    ruleSources: args.serRule?.map((rule) => path.resolve(rule)),
+    traceRuleSources: args.traceRule?.map((rule) => path.resolve(rule)),
+    externalValuesFile: args.externalValues ? path.resolve(args.externalValues) : undefined,
+    staticExtractBuiltinRules: args.staticExtractBuiltin
   });
 
   const payload = JSON.stringify(args.delta
@@ -70,6 +78,17 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (arg === "--rules" && next) {
       output.rules = next;
       index += 1;
+    } else if (arg === "--ser-rule" && next) {
+      output.serRule = [...output.serRule ?? [], next];
+      index += 1;
+    } else if (arg === "--trace-rule" && next) {
+      output.traceRule = [...output.traceRule ?? [], next];
+      index += 1;
+    } else if (arg === "--external-values" && next) {
+      output.externalValues = next;
+      index += 1;
+    } else if (arg === "--static-extract-builtin") {
+      output.staticExtractBuiltin = true;
     } else if (arg === "--tsconfig" && next) {
       output.tsconfig = next;
       index += 1;
@@ -101,6 +120,11 @@ async function runProcessProtocol(args: CliArgs): Promise<void> {
     projectName: request.projectName,
     tsConfigPath: stringOption(request, "tsconfig") ?? stringOption(request, "tsConfigPath"),
     endpointRulesDir: rulesDir,
+    ruleSources: request.ruleSources,
+    traceRuleSources: request.traceRuleSources,
+    externalValues: request.externalValues,
+    externalValuesFile: stringOption(request, "externalValuesFile"),
+    staticExtractBuiltinRules: booleanOption(request, "staticExtractBuiltinRules") ?? booleanOption(request, "staticExtractBuiltin"),
     include: arrayOption(request, "include"),
     exclude: arrayOption(request, "exclude"),
     gitRepoUrl: request.gitRepoUrl,
@@ -136,7 +160,12 @@ function requestFromArgs(args: CliArgs, projectRoot: string): ParseRequest {
     sourceRoots: [],
     dependencies: [],
     changeType: "SOURCE_MODIFIED",
-    options: {}
+    ruleSources: args.serRule?.map((rule) => path.resolve(rule)),
+    traceRuleSources: args.traceRule?.map((rule) => path.resolve(rule)),
+    options: {
+      ...(args.externalValues ? { externalValuesFile: path.resolve(args.externalValues) } : {}),
+      ...(args.staticExtractBuiltin ? { staticExtractBuiltin: true } : {})
+    }
   };
 }
 
@@ -170,6 +199,11 @@ function arrayOption(request: ParseRequest, key: string): string[] | undefined {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
 }
 
+function booleanOption(request: ParseRequest, key: string): boolean | undefined {
+  const value = request.options?.[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -192,8 +226,8 @@ function defaultRulesDir(): string {
 
 function printUsage(): void {
   process.stderr.write(
-    `Usage:\n` +
-      `  frontend-code-graph --project <path> [--rules <dir>] [--out graph.json] [--delta]\n` +
+      `Usage:\n` +
+      `  frontend-code-graph --project <path> [--rules <dir>] [--ser-rule <file>] [--trace-rule <file>] [--external-values <file>] [--out graph.json] [--delta]\n` +
       `  frontend-code-graph --stdio [--rules <dir>]\n` +
       `  frontend-code-graph --request request.json [--rules <dir>] [--out delta.json]\n`
   );

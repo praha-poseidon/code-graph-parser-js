@@ -15,6 +15,7 @@ import { GraphBuilder } from "../graph/graph-builder.js";
 import type { CodeFunction, CodeUnit, NodeLanguage } from "../model/code-graph.js";
 import type { ParserOptions, ParseResult } from "../model/parser-options.js";
 import { loadTypeScriptProject, resolveProjectName } from "../project/project-loader.js";
+import { StaticExtractEndpointProvider } from "../static-extract/static-extract-endpoint-provider.js";
 import { isProjectSourceFile, lineOf, relativeProjectPath } from "../util/path-utils.js";
 import { isHookName, isPascalCase } from "../util/string-utils.js";
 import { externalModuleId, ImportIndex } from "./import-index.js";
@@ -66,6 +67,12 @@ export class ReactCodeGraphParser {
     for (const sourceFile of sourceFiles) {
       this.parseSourceFile(sourceFile, context);
     }
+    await new StaticExtractEndpointProvider().addEndpoints(context.graph, {
+      projectName,
+      projectRoot,
+      sourceFiles,
+      options: context.options
+    });
 
     const graph = context.graph.graph;
     return {

@@ -214,6 +214,81 @@ test("converts parsed frontend graph to process GraphDelta protocol", async () =
   assert.ok(delta.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:GET:/api/users/{param}"));
 });
 
+test("adds outbound endpoints from static-extract facts with trace rules", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "static-extract-react-app" }),
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        allowJs: true,
+        checkJs: false,
+        jsx: "react-jsx",
+        moduleResolution: "bundler",
+        baseUrl: "."
+      },
+      include: ["src/**/*"]
+    }),
+    "src/api/user.ts": [
+      "const config = {",
+      "  get(key: string) { return key; }",
+      "};",
+      "export function loadUsers() {",
+      "  return fetch(config.get('usersUrl'));",
+      "}"
+    ].join("\n"),
+    "rules/api.ser": [
+      "rule \"Fetch With External Config\"",
+      "fact frontend_api_call",
+      "",
+      "find call fetch",
+      "",
+      "let path =",
+      "  from argument[0] take value",
+      "",
+      "build {",
+      "  client: \"fetch\"",
+      "  path: path",
+      "}"
+    ].join("\n"),
+    "rules/config.trace.ser": [
+      "trace \"TS Config Trace\"",
+      "",
+      "from call",
+      "when call config.get",
+      "",
+      "let configKey =",
+      "  from argument[0] take value",
+      "",
+      "build {",
+      "  namespace: \"config\"",
+      "  key: configKey",
+      "}"
+    ].join("\n"),
+    "rules/external-values.json": JSON.stringify({
+      config: {
+        usersUrl: ["/api/static-users"]
+      }
+    })
+  });
+
+  const parser = new ReactCodeGraphParser();
+  const result = await parser.parse({
+    projectRoot: root,
+    ruleSources: [path.join(root, "rules/api.ser")],
+    traceRuleSources: [path.join(root, "rules/config.trace.ser")],
+    externalValuesFile: path.join(root, "rules/external-values.json")
+  });
+
+  const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/api/static-users");
+  assert.ok(endpoint);
+  assert.equal(endpoint.attributes?.source, "static-extract");
+  assertGraphHasRelationship(
+    result,
+    "FUNCTION_TO_ENDPOINT",
+    "static-extract-react-app#src/api/user.ts::loadUsers()",
+    endpoint.id
+  );
+});
+
 function createFixtureProject(files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-code-graph-"));
   for (const [relativePath, content] of Object.entries(files)) {
