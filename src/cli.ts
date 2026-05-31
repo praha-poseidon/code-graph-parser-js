@@ -11,9 +11,13 @@ interface CliArgs {
   out?: string;
   rules?: string;
   serRule?: string[];
+  serRuleText?: string[];
   traceRule?: string[];
+  traceRuleText?: string[];
   externalValues?: string;
   staticExtractBuiltin?: boolean;
+  staticExtractPreset?: boolean | string[];
+  noLegacyEndpointInference?: boolean;
   tsconfig?: string;
   projectName?: string;
   request?: string;
@@ -43,9 +47,13 @@ async function main(): Promise<void> {
     tsConfigPath: args.tsconfig ? path.resolve(args.tsconfig) : undefined,
     endpointRulesDir: rulesDir,
     ruleSources: args.serRule?.map((rule) => path.resolve(rule)),
+    ruleTexts: args.serRuleText,
     traceRuleSources: args.traceRule?.map((rule) => path.resolve(rule)),
+    traceRuleTexts: args.traceRuleText,
     externalValuesFile: args.externalValues ? path.resolve(args.externalValues) : undefined,
-    staticExtractBuiltinRules: args.staticExtractBuiltin
+    staticExtractBuiltinRules: args.staticExtractBuiltin,
+    staticExtractPresetRules: args.staticExtractPreset,
+    legacyEndpointInference: !args.noLegacyEndpointInference
   });
 
   const payload = JSON.stringify(args.delta
@@ -81,14 +89,29 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (arg === "--ser-rule" && next) {
       output.serRule = [...output.serRule ?? [], next];
       index += 1;
+    } else if (arg === "--ser-rule-text" && next) {
+      output.serRuleText = [...output.serRuleText ?? [], next];
+      index += 1;
     } else if (arg === "--trace-rule" && next) {
       output.traceRule = [...output.traceRule ?? [], next];
+      index += 1;
+    } else if (arg === "--trace-rule-text" && next) {
+      output.traceRuleText = [...output.traceRuleText ?? [], next];
       index += 1;
     } else if (arg === "--external-values" && next) {
       output.externalValues = next;
       index += 1;
     } else if (arg === "--static-extract-builtin") {
       output.staticExtractBuiltin = true;
+    } else if (arg === "--static-extract-preset") {
+      if (next && !next.startsWith("-")) {
+        output.staticExtractPreset = [...presetArray(output.staticExtractPreset), ...next.split(",")];
+        index += 1;
+      } else {
+        output.staticExtractPreset = true;
+      }
+    } else if (arg === "--no-legacy-endpoint-inference") {
+      output.noLegacyEndpointInference = true;
     } else if (arg === "--tsconfig" && next) {
       output.tsconfig = next;
       index += 1;
@@ -121,10 +144,14 @@ async function runProcessProtocol(args: CliArgs): Promise<void> {
     tsConfigPath: stringOption(request, "tsconfig") ?? stringOption(request, "tsConfigPath"),
     endpointRulesDir: rulesDir,
     ruleSources: request.ruleSources,
+    ruleTexts: request.ruleTexts ?? arrayOption(request, "ruleTexts"),
     traceRuleSources: request.traceRuleSources,
+    traceRuleTexts: request.traceRuleTexts ?? arrayOption(request, "traceRuleTexts"),
     externalValues: request.externalValues,
     externalValuesFile: stringOption(request, "externalValuesFile"),
     staticExtractBuiltinRules: booleanOption(request, "staticExtractBuiltinRules") ?? booleanOption(request, "staticExtractBuiltin"),
+    staticExtractPresetRules: request.staticExtractPresetRules ?? booleanOption(request, "staticExtractPresetRules") ?? arrayOption(request, "staticExtractPresetRules"),
+    legacyEndpointInference: booleanOption(request, "legacyEndpointInference"),
     include: arrayOption(request, "include"),
     exclude: arrayOption(request, "exclude"),
     gitRepoUrl: request.gitRepoUrl,
@@ -161,10 +188,14 @@ function requestFromArgs(args: CliArgs, projectRoot: string): ParseRequest {
     dependencies: [],
     changeType: "SOURCE_MODIFIED",
     ruleSources: args.serRule?.map((rule) => path.resolve(rule)),
+    ruleTexts: args.serRuleText,
     traceRuleSources: args.traceRule?.map((rule) => path.resolve(rule)),
+    traceRuleTexts: args.traceRuleText,
     options: {
       ...(args.externalValues ? { externalValuesFile: path.resolve(args.externalValues) } : {}),
-      ...(args.staticExtractBuiltin ? { staticExtractBuiltin: true } : {})
+      ...(args.staticExtractBuiltin ? { staticExtractBuiltin: true } : {}),
+      ...(args.staticExtractPreset ? { staticExtractPresetRules: args.staticExtractPreset } : {}),
+      ...(args.noLegacyEndpointInference ? { legacyEndpointInference: false } : {})
     }
   };
 }
@@ -204,6 +235,10 @@ function booleanOption(request: ParseRequest, key: string): boolean | undefined 
   return typeof value === "boolean" ? value : undefined;
 }
 
+function presetArray(value: boolean | string[] | undefined): string[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -227,7 +262,7 @@ function defaultRulesDir(): string {
 function printUsage(): void {
   process.stderr.write(
       `Usage:\n` +
-      `  frontend-code-graph --project <path> [--rules <dir>] [--ser-rule <file>] [--trace-rule <file>] [--external-values <file>] [--out graph.json] [--delta]\n` +
+      `  frontend-code-graph --project <path> [--rules <dir>] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--no-legacy-endpoint-inference] [--out graph.json] [--delta]\n` +
       `  frontend-code-graph --stdio [--rules <dir>]\n` +
       `  frontend-code-graph --request request.json [--rules <dir>] [--out delta.json]\n`
   );

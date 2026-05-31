@@ -66,10 +66,7 @@ function relationshipId(input: Omit<CodeRelationship, "id">): string {
   const raw = [
     input.relationshipType,
     input.fromNodeId,
-    input.toNodeId,
-    input.lineNumber ?? "",
-    input.callType ?? "",
-    input.confidence ?? ""
+    input.toNodeId
   ].join("|");
   return crypto.createHash("sha1").update(raw).digest("hex");
 }

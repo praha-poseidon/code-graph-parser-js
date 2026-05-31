@@ -15,6 +15,9 @@ export type RelationshipType =
   | "IMPORTS"
   | "EXPORTS"
   | "CALLS"
+  | "EXTENDS"
+  | "IMPLEMENTS"
+  | "OVERRIDES"
   | "RENDERS"
   | "USES_HOOK"
   | "USES_STATE"
@@ -24,7 +27,7 @@ export type RelationshipType =
   | "ENDPOINT_TO_FUNCTION"
   | "MATCHES";
 
-export type EndpointType = "HTTP" | "UI_ROUTE" | "GRAPHQL" | "MQ" | "REDIS" | "DB" | "UNKNOWN";
+export type EndpointType = "HTTP" | "UI" | "UI_ROUTE" | "GRAPHQL" | "MQ" | "REDIS" | "DB" | "UNKNOWN";
 
 export type Confidence = "exact" | "inferred" | "heuristic" | "partial" | "unresolved";
 
@@ -76,6 +79,20 @@ export interface CodeEndpoint extends CodeNode {
   httpMethod?: string;
   path?: string;
   normalizedPath?: string;
+  uiEvent?: string;
+  uiElement?: string;
+  uiText?: string;
+  uiSelector?: string;
+  routePath?: string;
+  componentName?: string;
+  topic?: string;
+  operation?: string;
+  brokerType?: string;
+  keyPattern?: string;
+  command?: string;
+  dataStructure?: string;
+  tableName?: string;
+  dbOperation?: string;
 }
 
 export interface CodeRelationship {

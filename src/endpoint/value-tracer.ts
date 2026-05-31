@@ -1,5 +1,7 @@
 import {
   Node,
+  SyntaxKind,
+  type Symbol as TsSymbol,
   type CallExpression,
   type Expression,
   type Identifier,
@@ -64,9 +66,14 @@ export class ValueTracer {
 
     if (Node.isPropertyAccessExpression(expression)) {
       const symbol = expression.getSymbol();
-      const declaration = symbol?.getDeclarations()[0];
+      const declaration = firstResolvedDeclaration(symbol);
       if (declaration && Node.isPropertyAssignment(declaration)) {
         return this.tracePropertyAssignment(declaration, depth + 1);
+      }
+      const objectLiteral = this.resolveObjectLiteral(expression.getExpression());
+      const property = objectLiteral?.getProperty(expression.getName());
+      if (property && Node.isPropertyAssignment(property)) {
+        return this.tracePropertyAssignment(property, depth + 1);
       }
       return { raw: expression.getText(), confidence: "unresolved" };
     }
@@ -99,7 +106,7 @@ export class ValueTracer {
 
   private traceIdentifier(identifier: Identifier, depth: number): TracedValue {
     const symbol = identifier.getSymbol();
-    const declaration = symbol?.getDeclarations()[0];
+    const declaration = firstResolvedDeclaration(symbol);
     if (!declaration) {
       return { raw: identifier.getText(), confidence: "unresolved" };
     }
@@ -111,12 +118,12 @@ export class ValueTracer {
         : { raw: identifier.getText(), confidence: "unresolved" };
     }
 
-    if (Node.isImportSpecifier(declaration) || Node.isImportClause(declaration)) {
-      return { raw: identifier.getText(), confidence: "unresolved" };
-    }
-
     if (Node.isPropertyAssignment(declaration)) {
       return this.tracePropertyAssignment(declaration, depth + 1);
+    }
+
+    if (Node.isBindingElement(declaration)) {
+      return this.traceBindingElement(declaration, depth + 1);
     }
 
     return { raw: identifier.getText(), confidence: "unresolved" };
@@ -129,13 +136,31 @@ export class ValueTracer {
       : { raw: property.getText(), confidence: "unresolved" };
   }
 
+  private traceBindingElement(binding: import("ts-morph").BindingElement, depth: number): TracedValue {
+    const variableDeclaration = binding.getFirstAncestorByKind(SyntaxKind.VariableDeclaration);
+    const initializer = variableDeclaration?.getInitializer();
+    if (!initializer || !Node.isExpression(initializer)) {
+      return { raw: binding.getText(), confidence: "unresolved" };
+    }
+    const objectLiteral = this.resolveObjectLiteral(initializer);
+    if (!objectLiteral) {
+      return { raw: binding.getText(), confidence: "unresolved" };
+    }
+    const propertyName = binding.getPropertyNameNode()?.getText().replace(/^['"]|['"]$/g, "") ?? binding.getName();
+    const property = objectLiteral.getProperty(propertyName);
+    if (property && Node.isPropertyAssignment(property)) {
+      return this.tracePropertyAssignment(property, depth + 1);
+    }
+    return { raw: binding.getText(), confidence: "unresolved" };
+  }
+
   private resolveObjectLiteral(expression: Expression): ObjectLiteralExpression | undefined {
     if (Node.isObjectLiteralExpression(expression)) {
       return expression;
     }
     if (Node.isIdentifier(expression)) {
       const symbol = expression.getSymbol();
-      const declaration = symbol?.getDeclarations()[0];
+      const declaration = firstResolvedDeclaration(symbol);
       if (declaration && Node.isVariableDeclaration(declaration)) {
         const initializer = declaration.getInitializer();
         if (initializer && Node.isObjectLiteralExpression(initializer)) {
@@ -145,6 +170,11 @@ export class ValueTracer {
     }
     return undefined;
   }
+}
+
+function firstResolvedDeclaration(symbol: TsSymbol | undefined): import("ts-morph").Node | undefined {
+  const declarations = symbol?.getAliasedSymbol()?.getDeclarations() ?? symbol?.getDeclarations() ?? [];
+  return declarations[0];
 }
 
 export function literalFromExpression(expression: Expression | undefined): string | undefined {

@@ -18,8 +18,11 @@ export interface ParseRequest {
   gitBranch?: string;
   changeType?: string;
   ruleSources?: string[];
+  ruleTexts?: string[];
   traceRuleSources?: string[];
+  traceRuleTexts?: string[];
   externalValues?: Record<string, Record<string, string[]>>;
+  staticExtractPresetRules?: boolean | string[];
   options?: Record<string, unknown>;
 }
 
@@ -122,8 +125,22 @@ export interface JavaCodeEndpoint
     | "httpMethod"
     | "path"
     | "normalizedPath"
+    | "uiEvent"
+    | "uiElement"
+    | "uiText"
+    | "uiSelector"
+    | "routePath"
+    | "componentName"
+    | "topic"
+    | "operation"
+    | "brokerType"
+    | "keyPattern"
+    | "command"
+    | "dataStructure"
+    | "tableName"
+    | "dbOperation"
   > {
-  endpointKind: "http";
+  endpointKind: "http" | "mq" | "redis" | "db" | "ui";
 }
 
 type JavaCodeRelationship = Pick<
@@ -220,7 +237,7 @@ function cleanFunction(fn: CodeFunction, projectName: string, id: IdMapper): Jav
 
 function cleanEndpoint(endpoint: CodeEndpoint, projectName: string, id: IdMapper): JavaCodeEndpoint {
   return {
-    endpointKind: "http",
+    endpointKind: endpointKind(endpoint),
     id: id.required(endpoint.id),
     name: endpoint.name,
     qualifiedName: endpoint.qualifiedName,
@@ -240,8 +257,30 @@ function cleanEndpoint(endpoint: CodeEndpoint, projectName: string, id: IdMapper
     matchIdentity: endpoint.matchIdentity,
     httpMethod: endpoint.httpMethod,
     path: endpoint.path,
-    normalizedPath: endpoint.normalizedPath
+    normalizedPath: endpoint.normalizedPath,
+    uiEvent: endpoint.uiEvent,
+    uiElement: endpoint.uiElement,
+    uiText: endpoint.uiText,
+    uiSelector: endpoint.uiSelector,
+    routePath: endpoint.routePath,
+    componentName: endpoint.componentName,
+    topic: endpoint.topic,
+    operation: endpoint.operation,
+    brokerType: endpoint.brokerType,
+    keyPattern: endpoint.keyPattern,
+    command: endpoint.command,
+    dataStructure: endpoint.dataStructure,
+    tableName: endpoint.tableName,
+    dbOperation: endpoint.dbOperation
   };
+}
+
+function endpointKind(endpoint: CodeEndpoint): JavaCodeEndpoint["endpointKind"] {
+  if (endpoint.endpointType === "MQ") return "mq";
+  if (endpoint.endpointType === "REDIS") return "redis";
+  if (endpoint.endpointType === "DB") return "db";
+  if (endpoint.endpointType === "UI") return "ui";
+  return "http";
 }
 
 function cleanRelationship(relationship: CodeRelationship, projectName: string, id: IdMapper): JavaCodeRelationship {
