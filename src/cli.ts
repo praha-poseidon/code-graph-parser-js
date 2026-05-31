@@ -20,6 +20,8 @@ interface CliArgs {
   noLegacyEndpointInference?: boolean;
   tsconfig?: string;
   projectName?: string;
+  include?: string[];
+  exclude?: string[];
   request?: string;
   stdio?: boolean;
   delta?: boolean;
@@ -53,7 +55,9 @@ async function main(): Promise<void> {
     externalValuesFile: args.externalValues ? path.resolve(args.externalValues) : undefined,
     staticExtractBuiltinRules: args.staticExtractBuiltin,
     staticExtractPresetRules: args.staticExtractPreset,
-    legacyEndpointInference: !args.noLegacyEndpointInference
+    legacyEndpointInference: !args.noLegacyEndpointInference,
+    include: args.include,
+    exclude: args.exclude
   });
 
   const payload = JSON.stringify(args.delta
@@ -117,6 +121,12 @@ function parseArgs(argv: string[]): CliArgs {
       index += 1;
     } else if (arg === "--project-name" && next) {
       output.projectName = next;
+      index += 1;
+    } else if (arg === "--include" && next) {
+      output.include = [...output.include ?? [], ...splitPatterns(next)];
+      index += 1;
+    } else if (arg === "--exclude" && next) {
+      output.exclude = [...output.exclude ?? [], ...splitPatterns(next)];
       index += 1;
     } else if (arg === "--request" && next) {
       output.request = next;
@@ -195,7 +205,9 @@ function requestFromArgs(args: CliArgs, projectRoot: string): ParseRequest {
       ...(args.externalValues ? { externalValuesFile: path.resolve(args.externalValues) } : {}),
       ...(args.staticExtractBuiltin ? { staticExtractBuiltin: true } : {}),
       ...(args.staticExtractPreset ? { staticExtractPresetRules: args.staticExtractPreset } : {}),
-      ...(args.noLegacyEndpointInference ? { legacyEndpointInference: false } : {})
+      ...(args.noLegacyEndpointInference ? { legacyEndpointInference: false } : {}),
+      ...(args.include ? { include: args.include } : {}),
+      ...(args.exclude ? { exclude: args.exclude } : {})
     }
   };
 }
@@ -239,6 +251,10 @@ function presetArray(value: boolean | string[] | undefined): string[] {
   return Array.isArray(value) ? value : [];
 }
 
+function splitPatterns(value: string): string[] {
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -262,7 +278,7 @@ function defaultRulesDir(): string {
 function printUsage(): void {
   process.stderr.write(
       `Usage:\n` +
-      `  frontend-code-graph --project <path> [--rules <dir>] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--no-legacy-endpoint-inference] [--out graph.json] [--delta]\n` +
+      `  frontend-code-graph --project <path> [--include <glob>] [--exclude <glob>] [--rules <dir>] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--no-legacy-endpoint-inference] [--out graph.json] [--delta]\n` +
       `  frontend-code-graph --stdio [--rules <dir>]\n` +
       `  frontend-code-graph --request request.json [--rules <dir>] [--out delta.json]\n`
   );

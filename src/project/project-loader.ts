@@ -4,13 +4,27 @@ import fg from "fast-glob";
 import { Project, ts } from "ts-morph";
 import type { ParserOptions } from "../model/parser-options.js";
 
-const DEFAULT_INCLUDE = ["**/*.{js,jsx,ts,tsx,mjs,cjs}"];
-const DEFAULT_EXCLUDE = ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"];
+const DEFAULT_INCLUDE = ["src/**/*.{js,jsx,ts,tsx,mjs,cjs}"];
+const DEFAULT_EXCLUDE = [
+  "**/node_modules/**",
+  "**/dist/**",
+  "**/build/**",
+  "**/out/**",
+  "**/.next/**",
+  "**/.nuxt/**",
+  "**/.turbo/**",
+  "**/.cache/**",
+  "**/coverage/**",
+  "**/.git/**",
+  "**/target/**",
+  "**/generated/**",
+  "**/*.min.js"
+];
 
 export async function loadTypeScriptProject(options: ParserOptions): Promise<Project> {
   const tsConfigPath = resolveTsConfig(options);
   const project = tsConfigPath
-    ? new Project({ tsConfigFilePath: tsConfigPath, skipAddingFilesFromTsConfig: false })
+    ? new Project({ tsConfigFilePath: tsConfigPath, skipAddingFilesFromTsConfig: true })
     : new Project({
         compilerOptions: {
           allowJs: true,
