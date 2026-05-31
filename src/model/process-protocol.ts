@@ -4,8 +4,21 @@ import type {
   CodeGraph,
   CodePackage,
   CodeRelationship,
-  CodeUnit
+  CodeUnit,
+  RelationshipType
 } from "./code-graph.js";
+
+const CORE_RELATIONSHIP_TYPES = new Set<RelationshipType>([
+  "PACKAGE_TO_UNIT",
+  "UNIT_TO_FUNCTION",
+  "CALLS",
+  "EXTENDS",
+  "IMPLEMENTS",
+  "OVERRIDES",
+  "ENDPOINT_TO_FUNCTION",
+  "FUNCTION_TO_ENDPOINT",
+  "MATCHES"
+]);
 
 export interface ParseRequest {
   projectName?: string;
@@ -156,6 +169,13 @@ export function toGraphDelta(input: {
 }): GraphDelta {
   const { graph, request, projectName, projectRoot } = input;
   const id = createIdMapper(projectName);
+  const units = graph.units.filter(isCoreUnit);
+  const nodeIds = new Set<string>([
+    ...graph.packages.map((pkg) => pkg.id),
+    ...units.map((unit) => unit.id),
+    ...graph.functions.map((fn) => fn.id),
+    ...graph.endpoints.map((endpoint) => endpoint.id)
+  ]);
   return {
     scope: {
       projectName,
@@ -168,14 +188,32 @@ export function toGraphDelta(input: {
       attributes: {}
     },
     packages: graph.packages.map((pkg) => cleanPackage(pkg, projectName, id)),
-    units: graph.units.map((unit) => cleanUnit(unit, projectName, id)),
+    units: units.map((unit) => cleanUnit(unit, projectName, id)),
     functions: graph.functions.map((fn) => cleanFunction(fn, projectName, id)),
     endpoints: graph.endpoints.map((endpoint) => cleanEndpoint(endpoint, projectName, id)),
-    relationships: graph.relationships.map((relationship) => cleanRelationship(relationship, projectName, id)),
+    relationships: graph.relationships
+      .filter((relationship) => isCoreRelationship(relationship, nodeIds))
+      .map((relationship) => cleanRelationship(relationship, projectName, id)),
     deletedNodeIds: [],
     deletedRelationshipIds: [],
     diagnostics: []
   };
+}
+
+function isCoreUnit(unit: CodeUnit): boolean {
+  return unit.nodeKind === "module" && unit.subKind === "source_file";
+}
+
+function isCoreRelationship(relationship: CodeRelationship, nodeIds: Set<string>): boolean {
+  if (!CORE_RELATIONSHIP_TYPES.has(relationship.relationshipType)) {
+    return false;
+  }
+  return isKnownOrUnresolved(relationship.fromNodeId, nodeIds)
+    && isKnownOrUnresolved(relationship.toNodeId, nodeIds);
+}
+
+function isKnownOrUnresolved(nodeId: string, nodeIds: Set<string>): boolean {
+  return nodeIds.has(nodeId) || !nodeId.includes("#");
 }
 
 function cleanPackage(pkg: CodePackage, projectName: string, id: IdMapper): JavaCodePackage {

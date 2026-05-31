@@ -3,26 +3,16 @@ export type NodeLanguage = "javascript" | "typescript" | "unknown";
 export type CodeNodeKind =
   | "package"
   | "module"
-  | "component"
   | "function"
-  | "endpoint"
-  | "external";
+  | "endpoint";
 
 export type RelationshipType =
   | "PACKAGE_TO_UNIT"
   | "UNIT_TO_FUNCTION"
-  | "MODULE_TO_UNIT"
-  | "IMPORTS"
-  | "EXPORTS"
   | "CALLS"
   | "EXTENDS"
   | "IMPLEMENTS"
   | "OVERRIDES"
-  | "RENDERS"
-  | "USES_HOOK"
-  | "USES_STATE"
-  | "HANDLES_EVENT"
-  | "ROUTES_TO"
   | "FUNCTION_TO_ENDPOINT"
   | "ENDPOINT_TO_FUNCTION"
   | "MATCHES";

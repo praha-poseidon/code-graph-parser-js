@@ -18,14 +18,13 @@ import { extractReactUiInteraction } from "../ui/react-ui-interaction-extractor.
 import { addUiInteractionEndpoint } from "../ui/ui-endpoint-builder.js";
 import { isProjectSourceFile, lineOf, relativeProjectPath } from "../util/path-utils.js";
 import { isHookName, isPascalCase } from "../util/string-utils.js";
-import { externalModuleId, ImportIndex } from "./import-index.js";
+import { ImportIndex } from "./import-index.js";
 import { endpointId, functionId, moduleId, unitId } from "./node-id.js";
 import {
   buildSignature,
   resolveCallTargetId,
   resolveFunctionDeclarationId,
-  resolveUnitDeclarationId,
-  resolveTypeReferenceUnitId
+  resolveUnitDeclarationId
 } from "../semantic/symbol-resolver.js";
 import { ValueTracer } from "../endpoint/value-tracer.js";
 
@@ -160,10 +159,8 @@ export class ReactCodeGraphParser {
       confidence: "exact"
     });
 
-    this.parseImports(sourceFile, context, moduleNodeId, language);
     collectRoutePrefixes(sourceFile, context);
     this.parseTypeUnits(sourceFile, context, moduleNodeId, language);
-    this.parseExports(sourceFile, context, moduleNodeId, language);
 
     const candidates = this.collectFunctionCandidates(sourceFile);
     for (const candidate of candidates) {
@@ -176,175 +173,10 @@ export class ReactCodeGraphParser {
   }
 
   private parseTypeUnits(sourceFile: SourceFile, context: ParseContext, moduleNodeId: string, language: NodeLanguage): void {
-    const projectFilePath = relativeProjectPath(context.projectRoot, sourceFile.getFilePath());
-    const addTypeUnit = (node: ClassDeclaration | import("ts-morph").InterfaceDeclaration | import("ts-morph").TypeAliasDeclaration | import("ts-morph").EnumDeclaration, unitType: string): void => {
-      const name = node.getName();
-      if (!name) return;
-      const id = unitId(context.projectName, projectFilePath, name);
-      context.graph.addUnit({
-        id,
-        name,
-        qualifiedName: id,
-        language,
-        projectFilePath,
-        gitRepoUrl: context.options.gitRepoUrl,
-        gitBranch: context.options.gitBranch,
-        startLine: lineOf(sourceFile, node.getStart()),
-        endLine: lineOf(sourceFile, node.getEnd()),
-        nodeKind: "module",
-        subKind: unitType,
-        unitType,
-        modifiers: [],
-        packageId: moduleNodeId
-      });
-      context.graph.addRelationship({
-        fromNodeId: moduleNodeId,
-        toNodeId: id,
-        relationshipType: "MODULE_TO_UNIT",
-        language,
-        confidence: "exact"
-      });
-    };
-
     for (const declaration of sourceFile.getClasses()) {
-      const name = declaration.getName();
-      addTypeUnit(declaration, "class");
-      const fromId = name ? unitId(context.projectName, projectFilePath, name) : undefined;
-      if (!fromId) continue;
-      const extendNode = declaration.getExtends();
-      const extendTarget = extendNode ? resolveTypeReferenceUnitId(context, extendNode) ?? resolveImportedUnitId(context, sourceFile, cleanTypeName(extendNode.getText())) ?? extendNode.getText() : undefined;
-      if (extendTarget) {
-        context.graph.addRelationship({
-          fromNodeId: fromId,
-          toNodeId: extendTarget,
-          relationshipType: "EXTENDS",
-          language,
-          lineNumber: lineOf(sourceFile, declaration.getStart()),
-          confidence: extendTarget === extendNode?.getText() ? "unresolved" : "exact"
-        });
-      }
-      for (const impl of declaration.getImplements()) {
-        const target = resolveTypeReferenceUnitId(context, impl) ?? resolveImportedUnitId(context, sourceFile, cleanTypeName(impl.getText())) ?? impl.getText();
-        context.graph.addRelationship({
-          fromNodeId: fromId,
-          toNodeId: target,
-          relationshipType: "IMPLEMENTS",
-          language,
-          lineNumber: lineOf(sourceFile, impl.getStart()),
-          confidence: target === impl.getText() ? "unresolved" : "exact"
-        });
-      }
-      for (const method of declaration.getMethods()) {
-        const fromFunctionId = functionId(context.projectName, projectFilePath, buildSignature(`${name}.${method.getName()}`, method.getParameters().map((param) => param.getText())));
-        for (const target of resolveOverrideTargets(context, sourceFile, declaration, method.getName())) {
-          if (target === fromFunctionId) continue;
-          context.graph.addRelationship({
-            fromNodeId: fromFunctionId,
-            toNodeId: target,
-            relationshipType: "OVERRIDES",
-            language,
-            lineNumber: lineOf(sourceFile, method.getStart()),
-            confidence: "inferred"
-          });
-        }
-      }
       if (legacyEndpointInferenceEnabled(context)) {
         this.addDecoratorEntrypoints(sourceFile, context, language, declaration);
       }
-    }
-
-    for (const declaration of sourceFile.getInterfaces()) {
-      const name = declaration.getName();
-      addTypeUnit(declaration, "interface");
-      const fromId = name ? unitId(context.projectName, projectFilePath, name) : undefined;
-      if (!fromId) continue;
-      for (const ext of declaration.getExtends()) {
-        const target = resolveTypeReferenceUnitId(context, ext) ?? resolveImportedUnitId(context, sourceFile, cleanTypeName(ext.getText())) ?? ext.getText();
-        context.graph.addRelationship({
-          fromNodeId: fromId,
-          toNodeId: target,
-          relationshipType: "EXTENDS",
-          language,
-          lineNumber: lineOf(sourceFile, ext.getStart()),
-          confidence: target === ext.getText() ? "unresolved" : "exact"
-        });
-      }
-    }
-
-    for (const declaration of sourceFile.getTypeAliases()) {
-      addTypeUnit(declaration, "type_alias");
-    }
-    for (const declaration of sourceFile.getEnums()) {
-      addTypeUnit(declaration, "enum");
-    }
-  }
-
-  private parseExports(sourceFile: SourceFile, context: ParseContext, moduleNodeId: string, language: NodeLanguage): void {
-    for (const declaration of sourceFile.getExportDeclarations()) {
-      const targetSource = declaration.getModuleSpecifierSourceFile();
-      if (!targetSource || !isProjectSourceFile(targetSource.getFilePath(), context.projectRoot)) continue;
-      context.graph.addRelationship({
-        fromNodeId: moduleNodeId,
-        toNodeId: moduleId(context.projectName, relativeProjectPath(context.projectRoot, targetSource.getFilePath())),
-        relationshipType: "EXPORTS",
-        language,
-        lineNumber: lineOf(sourceFile, declaration.getStart()),
-        confidence: "exact"
-      });
-    }
-
-    for (const declaration of [
-      ...sourceFile.getClasses(),
-      ...sourceFile.getInterfaces(),
-      ...sourceFile.getTypeAliases(),
-      ...sourceFile.getEnums()
-    ]) {
-      if (!declaration.isExported()) continue;
-      const name = declaration.getName();
-      if (!name) continue;
-      context.graph.addRelationship({
-        fromNodeId: moduleNodeId,
-        toNodeId: unitId(context.projectName, relativeProjectPath(context.projectRoot, sourceFile.getFilePath()), name),
-        relationshipType: "EXPORTS",
-        language,
-        lineNumber: lineOf(sourceFile, declaration.getStart()),
-        confidence: "exact"
-      });
-    }
-  }
-
-  private parseImports(sourceFile: SourceFile, context: ParseContext, moduleNodeId: string, language: NodeLanguage): void {
-    for (const declaration of sourceFile.getImportDeclarations()) {
-      const specifier = declaration.getModuleSpecifierValue();
-      const targetSource = declaration.getModuleSpecifierSourceFile();
-      const targetId = targetSource && isProjectSourceFile(targetSource.getFilePath(), context.projectRoot)
-        ? moduleId(context.projectName, relativeProjectPath(context.projectRoot, targetSource.getFilePath()))
-        : externalModuleId(specifier);
-
-      if (!targetSource) {
-        context.graph.addUnit({
-          id: targetId,
-          name: specifier,
-          qualifiedName: targetId,
-          language: "unknown",
-          projectFilePath: externalProjectFilePath(specifier),
-          nodeKind: "external",
-          subKind: "npm_module",
-          unitType: "external_module",
-          modifiers: [],
-          attributes: { moduleSpecifier: specifier }
-        });
-      }
-
-      context.graph.addRelationship({
-        fromNodeId: moduleNodeId,
-        toNodeId: targetId,
-        relationshipType: "IMPORTS",
-        language,
-        lineNumber: lineOf(sourceFile, declaration.getStart()),
-        confidence: targetSource ? "exact" : "heuristic",
-        attributes: { moduleSpecifier: specifier }
-      });
     }
   }
 
@@ -564,51 +396,6 @@ export class ReactCodeGraphParser {
       confidence: "exact"
     });
 
-    if (candidate.ownerUnitName) {
-      context.graph.addRelationship({
-        fromNodeId: unitId(context.projectName, projectFilePath, candidate.ownerUnitName),
-        toNodeId: fn.id,
-        relationshipType: "UNIT_TO_FUNCTION",
-        language,
-        confidence: "exact"
-      });
-    }
-
-    if (candidate.isComponent) {
-      const componentId = unitId(context.projectName, projectFilePath, candidate.name);
-      const component: CodeUnit = {
-        id: componentId,
-        name: candidate.name,
-        qualifiedName: componentId,
-        language,
-        projectFilePath,
-        gitRepoUrl: context.options.gitRepoUrl,
-        gitBranch: context.options.gitBranch,
-        startLine,
-        endLine,
-        nodeKind: "component",
-        subKind: candidate.subKind ?? "react_function_component",
-        unitType: candidate.subKind ?? "react_component",
-        modifiers: [],
-        packageId: moduleNodeId
-      };
-      context.graph.addUnit(component);
-      context.graph.addRelationship({
-        fromNodeId: moduleNodeId,
-        toNodeId: component.id,
-        relationshipType: "MODULE_TO_UNIT",
-        language,
-        confidence: "exact"
-      });
-      context.graph.addRelationship({
-        fromNodeId: component.id,
-        toNodeId: fn.id,
-        relationshipType: "UNIT_TO_FUNCTION",
-        language,
-        confidence: "exact"
-      });
-    }
-
     if (legacyEndpointInferenceEnabled(context)) {
       this.addFrameworkEntrypointEndpoint(sourceFile, context, fn, candidate);
     }
@@ -752,15 +539,6 @@ export class ReactCodeGraphParser {
       if (!tagName || !isPascalCase(tagName)) continue;
       const targetId = resolveComponentUnitId(context, sourceFile, jsx, tagName);
       bindRenderedComponentProps(context, sourceFile, jsx, targetId, currentFn);
-      context.graph.addRelationship({
-        fromNodeId: componentOrFunctionSourceId(context, sourceFile, candidate, currentFn),
-        toNodeId: targetId,
-        relationshipType: "RENDERS",
-        language: currentFn.language,
-        lineNumber: lineOf(sourceFile, jsx.getStart()),
-        confidence: targetId === tagName ? "unresolved" : "inferred",
-        attributes: { jsxTag: tagName }
-      });
     }
 
     const calls = localDescendants(body).filter(Node.isCallExpression);
@@ -814,19 +592,6 @@ export class ReactCodeGraphParser {
           attributes: { ruleId: endpoint.ruleId }
         });
       }
-    }
-
-    if (isHookName(calleeName)) {
-      const target = resolveCallTargetId(context, call) ?? resolveImportedFunctionId(context, sourceFile, calleeName) ?? calleeName;
-      context.graph.addRelationship({
-        fromNodeId: currentFn.id,
-        toNodeId: target,
-        relationshipType: "USES_HOOK",
-        language: currentFn.language,
-        lineNumber: lineOf(sourceFile, call.getStart()),
-        confidence: target === calleeName ? "unresolved" : "inferred"
-      });
-      return;
     }
 
     const target = resolveCallTargetId(context, call) ?? resolveCallTarget(context, sourceFile, calleeName);
@@ -955,14 +720,6 @@ function legacyEndpointInferenceEnabled(context: ParseContext): boolean {
 
 function languageOf(filePath: string): NodeLanguage {
   return /\.(ts|tsx)$/i.test(filePath) ? "typescript" : "javascript";
-}
-
-function externalProjectFilePath(specifier: string): string {
-  return `external:${specifier}`;
-}
-
-function cleanTypeName(text: string): string {
-  return text.split("<")[0]?.trim() ?? text;
 }
 
 function containsJsx(node: TsNode): boolean {
@@ -1184,37 +941,6 @@ function resolveFunctionId(context: ParseContext, sourceFile: SourceFile, functi
   return functionId(context.projectName, relativeProjectPath(context.projectRoot, sourceFile.getFilePath()), signature);
 }
 
-function resolveOverrideTargets(context: ParseContext, sourceFile: SourceFile, declaration: ClassDeclaration, methodName: string): string[] {
-  const output: string[] = [];
-  const targetNames = [
-    declaration.getExtends()?.getText(),
-    ...declaration.getImplements().map((item) => item.getText())
-  ].filter((value): value is string => Boolean(value));
-
-  for (const rawTargetName of targetNames) {
-    const targetName = cleanTypeName(rawTargetName);
-    const imported = context.importIndex.get(sourceFile.getFilePath(), targetName);
-    const targetSource = imported?.sourceFilePath
-      ? sourceFile.getProject().getSourceFile(imported.sourceFilePath)
-      : sourceFile;
-    if (!targetSource) continue;
-    const targetProjectFilePath = imported?.projectFilePath ?? relativeProjectPath(context.projectRoot, targetSource.getFilePath());
-    const targetDeclaration =
-      targetSource.getClass(targetName) ??
-      targetSource.getInterface(targetName);
-    if (!targetDeclaration) continue;
-    const targetMethod = targetDeclaration.getMethods().find((method) => method.getName() === methodName);
-    if (!targetMethod) continue;
-    output.push(functionId(
-      context.projectName,
-      targetProjectFilePath,
-      buildSignature(`${targetName}.${methodName}`, targetMethod.getParameters().map((param) => param.getText()))
-    ));
-  }
-
-  return output;
-}
-
 function getCallName(call: CallExpression): string | undefined {
   const expression = call.getExpression();
   if (Node.isIdentifier(expression)) return expression.getText();
@@ -1287,12 +1013,6 @@ function resolveJsxTagUnitId(context: ParseContext, jsx: TsNode): string | undef
     }
   }
   return undefined;
-}
-
-function componentOrFunctionSourceId(context: ParseContext, sourceFile: SourceFile, candidate: FunctionCandidate, currentFn: CodeFunction): string {
-  if (!candidate.isComponent) return currentFn.id;
-  const projectFilePath = relativeProjectPath(context.projectRoot, sourceFile.getFilePath());
-  return unitId(context.projectName, projectFilePath, candidate.name);
 }
 
 function resolveCallTarget(context: ParseContext, sourceFile: SourceFile, calleeName: string): string | undefined {

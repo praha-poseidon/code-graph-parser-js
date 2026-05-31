@@ -57,14 +57,8 @@ test("parses React JSX graph and outbound endpoint", async () => {
     endpointRulesDir: path.resolve("endpoint-rules")
   });
 
-  assert.ok(result.graph.units.some((unit) => unit.id === "fixture-app#src/pages/UserPage.jsx::UserPage"));
-  assert.ok(
-    result.graph.relationships.some((rel) =>
-      rel.relationshipType === "RENDERS" &&
-      rel.fromNodeId === "fixture-app#src/pages/UserPage.jsx::UserPage" &&
-      rel.toNodeId === "fixture-app#src/components/UserCard.jsx::UserCard"
-    )
-  );
+  assert.ok(result.graph.units.some((unit) => unit.id === "fixture-app#src/pages/UserPage.jsx"));
+  assert.ok(result.graph.functions.some((fn) => fn.id === "fixture-app#src/pages/UserPage.jsx::UserPage()"));
   assert.ok(result.graph.relationships.some((rel) => rel.relationshipType === "CALLS" && rel.toNodeId === "fixture-app#src/api/user.js::getUser(id)"));
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:GET:/api/users/{param}"));
 });
@@ -118,22 +112,25 @@ test("parses mixed JS TSX project into graph without graph storage", async () =>
   });
 
   const ids = {
-    page: "mixed-react-app#src/pages/UserPage.tsx::UserPage",
-    list: "mixed-react-app#src/components/UserList.jsx::UserList",
+    pageUnit: "mixed-react-app#src/pages/UserPage.tsx",
+    listUnit: "mixed-react-app#src/components/UserList.jsx",
+    page: "mixed-react-app#src/pages/UserPage.tsx::UserPage()",
+    list: "mixed-react-app#src/components/UserList.jsx::UserList()",
     useUsers: "mixed-react-app#src/hooks/useUsers.ts::useUsers()",
     listUsers: "mixed-react-app#src/api/http.ts::listUsers()",
     createUser: "mixed-react-app#src/api/http.ts::createUser(data: unknown)"
   };
 
-  assertGraphHasUnit(result, ids.page);
-  assertGraphHasUnit(result, ids.list);
+  assertGraphHasUnit(result, ids.pageUnit);
+  assertGraphHasUnit(result, ids.listUnit);
+  assertGraphHasFunction(result, ids.page);
+  assertGraphHasFunction(result, ids.list);
   assertGraphHasFunction(result, ids.useUsers);
   assertGraphHasFunction(result, ids.listUsers);
   assertGraphHasFunction(result, ids.createUser);
   assertGraphHasFunction(result, "mixed-react-app#src/api/http.ts::Articles.delete(slug: string)");
 
-  assertGraphHasRelationship(result, "RENDERS", ids.page, ids.list);
-  assertGraphHasRelationship(result, "USES_HOOK", "mixed-react-app#src/pages/UserPage.tsx::UserPage()", ids.useUsers);
+  assertGraphHasRelationship(result, "CALLS", ids.page, ids.useUsers);
   assertGraphHasRelationship(result, "CALLS", ids.useUsers, ids.listUsers);
 
   assert.ok(
@@ -1018,22 +1015,19 @@ test("resolves TypeScript symbols for calls and type relationships", async () =>
   });
 
   const ids = {
-    apiClient: "semantic-ts-app#src/contracts.ts::ApiClient",
-    baseService: "semantic-ts-app#src/contracts.ts::BaseService",
-    userService: "semantic-ts-app#src/service.ts::UserService",
+    contractsUnit: "semantic-ts-app#src/contracts.ts",
+    serviceUnit: "semantic-ts-app#src/service.ts",
     handleSave: "semantic-ts-app#src/page.tsx::handleSave()",
     save: "semantic-ts-app#src/service.ts::UserService.save()",
     interfaceSave: "semantic-ts-app#src/contracts.ts::ApiClient.save()"
   };
 
-  assertGraphHasUnit(result, ids.apiClient);
-  assertGraphHasUnit(result, ids.baseService);
-  assertGraphHasUnit(result, ids.userService);
+  assertGraphHasUnit(result, ids.contractsUnit);
+  assertGraphHasUnit(result, ids.serviceUnit);
   assertGraphHasFunction(result, ids.save);
   assertGraphHasFunction(result, ids.interfaceSave);
-  assertGraphHasRelationship(result, "EXTENDS", ids.userService, ids.baseService);
-  assertGraphHasRelationship(result, "IMPLEMENTS", ids.userService, ids.apiClient);
-  assertGraphHasRelationship(result, "OVERRIDES", ids.save, ids.interfaceSave);
+  assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.serviceUnit, ids.save);
+  assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.contractsUnit, ids.interfaceSave);
   assertGraphHasRelationship(result, "CALLS", ids.handleSave, ids.save);
 
   const uiEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Save");
@@ -1104,12 +1098,9 @@ test("resolves class member calls, super calls, and barrel exports", async () =>
     formSaveInjected: "advanced-ts-app#src/services/form-service.ts::FormService.saveInjected()",
     formSaveDirect: "advanced-ts-app#src/services/form-service.ts::FormService.saveDirect()",
     userSave: "advanced-ts-app#src/services/user-service.ts::UserService.save()",
-    baseSave: "advanced-ts-app#src/services/base.ts::BaseService.save()",
-    userService: "advanced-ts-app#src/services/user-service.ts::UserService",
-    baseService: "advanced-ts-app#src/services/base.ts::BaseService"
+    baseSave: "advanced-ts-app#src/services/base.ts::BaseService.save()"
   };
 
-  assertGraphHasRelationship(result, "EXTENDS", ids.userService, ids.baseService);
   assertGraphHasRelationship(result, "CALLS", ids.pageHandler, ids.formSaveInjected);
   assertGraphHasRelationship(result, "CALLS", ids.pageHandler, ids.formSaveDirect);
   assertGraphHasRelationship(result, "CALLS", ids.formSaveInjected, ids.userSave);
@@ -1198,13 +1189,11 @@ test("resolves renamed default React components and destructured callback props"
     endpointRulesDir: path.resolve("endpoint-rules")
   });
 
-  const formComponentId = "react-default-props-app#src/components/UserForm.tsx::UserForm";
-  const pageComponentId = "react-default-props-app#src/page.tsx::UserPage";
+  const formUnitId = "react-default-props-app#src/components/UserForm.tsx";
   const handlerId = "react-default-props-app#src/page.tsx::handleSave()";
   const uiEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Save");
 
-  assertGraphHasUnit(result, formComponentId);
-  assertGraphHasRelationship(result, "RENDERS", pageComponentId, formComponentId);
+  assertGraphHasUnit(result, formUnitId);
   assert.ok(uiEndpoint);
   assertGraphHasRelationship(result, "ENDPOINT_TO_FUNCTION", uiEndpoint.id, handlerId);
 });
@@ -1301,7 +1290,7 @@ test("parses React memo and forwardRef wrapped components", async () => {
   });
 
   assertGraphHasFunction(result, "react-wrapper-app#src/page.tsx::MemoPage()");
-  assertGraphHasUnit(result, "react-wrapper-app#src/page.tsx::MemoPage");
+  assertGraphHasUnit(result, "react-wrapper-app#src/page.tsx");
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Memo Save"));
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:POST:/api/memo"));
 
