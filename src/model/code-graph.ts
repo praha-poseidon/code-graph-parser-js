@@ -8,8 +8,10 @@ export type CodeNodeKind =
 
 export type RelationshipType =
   | "PACKAGE_TO_UNIT"
+  | "PACKAGE_TO_PACKAGE"
   | "UNIT_TO_FUNCTION"
   | "CALLS"
+  | "RENDERS"
   | "EXTENDS"
   | "IMPLEMENTS"
   | "OVERRIDES"
