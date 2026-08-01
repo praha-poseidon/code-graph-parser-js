@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   Node,
@@ -7,8 +8,6 @@ import {
   type Node as TsNode,
   type SourceFile
 } from "ts-morph";
-import { EndpointRuleEngine } from "../endpoint/endpoint-rule-engine.js";
-import { loadEndpointRules } from "../endpoint/rule-loader.js";
 import { GraphBuilder } from "../graph/graph-builder.js";
 import type { CodeFunction, CodeUnit, NodeLanguage } from "../model/code-graph.js";
 import type { ParserOptions, ParseResult } from "../model/parser-options.js";
@@ -19,21 +18,19 @@ import { addUiInteractionEndpoint } from "../ui/ui-endpoint-builder.js";
 import { isProjectSourceFile, lineOf, relativeProjectPath } from "../util/path-utils.js";
 import { isHookName, isPascalCase } from "../util/string-utils.js";
 import { ImportIndex } from "./import-index.js";
-import { endpointId, functionId, moduleId, unitId } from "./node-id.js";
+import { directoryPackageId, endpointId, functionId, moduleId, unitId } from "./node-id.js";
 import {
   buildSignature,
   resolveCallTargetId,
   resolveFunctionDeclarationId,
   resolveUnitDeclarationId
 } from "../semantic/symbol-resolver.js";
-import { ValueTracer } from "../endpoint/value-tracer.js";
 
 interface ParseContext {
   projectName: string;
   projectRoot: string;
   graph: GraphBuilder;
   importIndex: ImportIndex;
-  endpointEngine: EndpointRuleEngine;
   options: ParserOptions;
   componentPropHandlers: Map<string, Set<string>>;
   pendingPropEndpoints: Map<string, PropEndpointReference[]>;
@@ -70,7 +67,6 @@ export class ReactCodeGraphParser {
       .filter((file) => isProjectSourceFile(file.getFilePath(), projectRoot))
       .filter((file) => isSupportedSourceFile(file.getFilePath()));
 
-    const rules = options.endpointRulesDir ? await loadEndpointRules(options.endpointRulesDir) : [];
     const importIndex = new ImportIndex(projectRoot);
     importIndex.index(sourceFiles);
 
@@ -79,14 +75,13 @@ export class ReactCodeGraphParser {
       projectRoot,
       graph: new GraphBuilder(),
       importIndex,
-      endpointEngine: new EndpointRuleEngine(rules),
       options: { ...options, projectRoot },
       componentPropHandlers: new Map(),
       pendingPropEndpoints: new Map(),
       routePrefixes: new Map()
     };
 
-    this.addProjectPackage(context);
+    // Directory packages are created on demand per file path (no project-root package).
     for (const sourceFile of sourceFiles) {
       this.parseSourceFile(sourceFile, context);
     }
@@ -111,25 +106,65 @@ export class ReactCodeGraphParser {
     };
   }
 
-  private addProjectPackage(context: ParseContext): void {
-    context.graph.addPackage({
-      id: context.projectName,
-      name: context.projectName,
-      qualifiedName: context.projectName,
-      language: "unknown",
-      projectFilePath: ".",
-      gitRepoUrl: context.options.gitRepoUrl,
-      gitBranch: context.options.gitBranch,
-      nodeKind: "package",
-      subKind: "frontend_project",
-      packagePath: "."
-    });
+  /**
+   * Build package nodes for each directory segment of a file path.
+   * Project root (".") is intentionally NOT a package.
+   * Returns the immediate parent directory package id for the file, or undefined
+   * when the file lives at the project root.
+   */
+  private ensureDirectoryPackages(context: ParseContext, projectFilePath: string): string | undefined {
+    const normalized = projectFilePath.split(path.sep).join("/");
+    const dir = path.posix.dirname(normalized);
+    if (!dir || dir === "." || dir === "/") {
+      return undefined;
+    }
+
+    const segments = dir.split("/").filter(Boolean);
+    let currentPath = "";
+    let parentPackageId: string | undefined;
+    let leafPackageId: string | undefined;
+
+    for (const segment of segments) {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      const packageId = directoryPackageId(context.projectName, currentPath);
+      context.graph.addPackage({
+        id: packageId,
+        name: segment,
+        qualifiedName: currentPath,
+        language: "unknown",
+        projectFilePath: currentPath,
+        gitRepoUrl: context.options.gitRepoUrl,
+        gitBranch: context.options.gitBranch,
+        nodeKind: "package",
+        subKind: "directory",
+        packagePath: currentPath,
+        attributes: {
+          parentPackageId: parentPackageId ?? null
+        }
+      });
+
+      if (parentPackageId) {
+        context.graph.addRelationship({
+          fromNodeId: parentPackageId,
+          toNodeId: packageId,
+          relationshipType: "PACKAGE_TO_PACKAGE",
+          language: "unknown",
+          confidence: "exact"
+        });
+      }
+
+      parentPackageId = packageId;
+      leafPackageId = packageId;
+    }
+
+    return leafPackageId;
   }
 
   private parseSourceFile(sourceFile: SourceFile, context: ParseContext): void {
     const projectFilePath = relativeProjectPath(context.projectRoot, sourceFile.getFilePath());
     const language = languageOf(sourceFile.getFilePath());
     const moduleNodeId = moduleId(context.projectName, projectFilePath);
+    const parentPackageId = this.ensureDirectoryPackages(context, projectFilePath);
 
     context.graph.addUnit({
       id: moduleNodeId,
@@ -145,19 +180,21 @@ export class ReactCodeGraphParser {
       subKind: "source_file",
       unitType: "module",
       modifiers: [],
-      packageId: context.projectName,
+      packageId: parentPackageId,
       attributes: {
         extension: path.extname(projectFilePath)
       }
     });
 
-    context.graph.addRelationship({
-      fromNodeId: context.projectName,
-      toNodeId: moduleNodeId,
-      relationshipType: "PACKAGE_TO_UNIT",
-      language,
-      confidence: "exact"
-    });
+    if (parentPackageId) {
+      context.graph.addRelationship({
+        fromNodeId: parentPackageId,
+        toNodeId: moduleNodeId,
+        relationshipType: "PACKAGE_TO_UNIT",
+        language,
+        confidence: "exact"
+      });
+    }
 
     collectRoutePrefixes(sourceFile, context);
     this.parseTypeUnits(sourceFile, context, moduleNodeId, language);
@@ -167,16 +204,12 @@ export class ReactCodeGraphParser {
       const fn = this.addFunctionCandidate(sourceFile, context, moduleNodeId, language, candidate);
       this.parseFunctionBody(sourceFile, context, fn, candidate);
     }
-    if (legacyEndpointInferenceEnabled(context)) {
-      this.parseRegisteredRoutes(sourceFile, context, moduleNodeId, language);
-    }
+    this.parseRegisteredRoutes(sourceFile, context, moduleNodeId, language);
   }
 
   private parseTypeUnits(sourceFile: SourceFile, context: ParseContext, moduleNodeId: string, language: NodeLanguage): void {
     for (const declaration of sourceFile.getClasses()) {
-      if (legacyEndpointInferenceEnabled(context)) {
-        this.addDecoratorEntrypoints(sourceFile, context, language, declaration);
-      }
+      this.addDecoratorEntrypoints(sourceFile, context, language, declaration);
     }
   }
 
@@ -396,9 +429,7 @@ export class ReactCodeGraphParser {
       confidence: "exact"
     });
 
-    if (legacyEndpointInferenceEnabled(context)) {
-      this.addFrameworkEntrypointEndpoint(sourceFile, context, fn, candidate);
-    }
+    this.addFrameworkEntrypointEndpoint(sourceFile, context, fn, candidate);
 
     return fn;
   }
@@ -511,34 +542,47 @@ export class ReactCodeGraphParser {
 
     for (const jsx of localDescendants(body).filter((node) => Node.isJsxOpeningElement(node) || Node.isJsxSelfClosingElement(node))) {
       const propReference = resolveUiHandlerPropReference(sourceFile, context, jsx, candidate);
-      if (legacyEndpointInferenceEnabled(context)) {
-        const interaction = extractReactUiInteraction({
-          projectName: context.projectName,
-          projectRoot: context.projectRoot,
-          sourceFile,
-          language: currentFn.language,
-          node: jsx,
-          componentName: candidate.isComponent ? candidate.name : undefined,
-          gitRepoUrl: context.options.gitRepoUrl,
-          gitBranch: context.options.gitBranch,
-          resolveHandlerTarget: (node) => resolveUiHandlerTarget(context, sourceFile, node, currentFn)
-        });
-        if (interaction) {
-          const endpointNodeId = addUiInteractionEndpoint(context.graph, interaction);
-          if (propReference) {
-            addPendingPropEndpoint(context, propReference.componentId, propReference.propName, {
-              endpointNodeId,
-              language: currentFn.language,
-              line: interaction.line,
-              eventType: interaction.eventType
-            });
-          }
+      const interaction = extractReactUiInteraction({
+        projectName: context.projectName,
+        projectRoot: context.projectRoot,
+        sourceFile,
+        language: currentFn.language,
+        node: jsx,
+        componentName: candidate.isComponent ? candidate.name : undefined,
+        gitRepoUrl: context.options.gitRepoUrl,
+        gitBranch: context.options.gitBranch,
+        resolveHandlerTarget: (node) => resolveUiHandlerTarget(context, sourceFile, node, currentFn)
+      });
+      if (interaction) {
+        const endpointNodeId = addUiInteractionEndpoint(context.graph, interaction);
+        if (propReference) {
+          addPendingPropEndpoint(context, propReference.componentId, propReference.propName, {
+            endpointNodeId,
+            language: currentFn.language,
+            line: interaction.line,
+            eventType: interaction.eventType
+          });
         }
       }
       const tagName = getJsxTagName(jsx);
       if (!tagName || !isPascalCase(tagName)) continue;
-      const targetId = resolveComponentUnitId(context, sourceFile, jsx, tagName);
-      bindRenderedComponentProps(context, sourceFile, jsx, targetId, currentFn);
+      const targetUnitId = resolveComponentUnitId(context, sourceFile, jsx, tagName);
+      bindRenderedComponentProps(context, sourceFile, jsx, targetUnitId, currentFn);
+
+      // Component render edge: parent function/component → child component function.
+      const targetFnId = resolveRenderedComponentFunctionId(context, sourceFile, jsx, tagName);
+      if (targetFnId && targetFnId !== currentFn.id) {
+        ensurePlaceholderFunction(context, targetFnId, currentFn.language);
+        context.graph.addRelationship({
+          fromNodeId: currentFn.id,
+          toNodeId: targetFnId,
+          relationshipType: "RENDERS",
+          language: currentFn.language,
+          lineNumber: lineOf(sourceFile, jsx.getStart()),
+          confidence: "inferred",
+          attributes: { tagName, source: "jsx-component" }
+        });
+      }
     }
 
     const calls = localDescendants(body).filter(Node.isCallExpression);
@@ -551,48 +595,7 @@ export class ReactCodeGraphParser {
     const calleeName = getCallName(call);
     if (!calleeName) return;
 
-    if (legacyEndpointInferenceEnabled(context)) {
-      for (const endpoint of context.endpointEngine.extract(call)) {
-        const projectFilePath = relativeProjectPath(context.projectRoot, sourceFile.getFilePath());
-        const line = lineOf(sourceFile, call.getStart());
-        const endpointNodeId = endpointId(context.projectName, projectFilePath, endpoint.matchIdentity, line);
-        context.graph.addEndpoint({
-          id: endpointNodeId,
-          name: endpoint.matchIdentity,
-          qualifiedName: endpointNodeId,
-          language: currentFn.language,
-          projectFilePath,
-          gitRepoUrl: context.options.gitRepoUrl,
-          gitBranch: context.options.gitBranch,
-          startLine: line,
-          endLine: line,
-          nodeKind: "endpoint",
-          subKind: "http_outbound",
-          endpointType: "HTTP",
-          direction: "outbound",
-          isExternal: true,
-          parseLevel: endpoint.confidence === "exact" || endpoint.confidence === "inferred" ? "full" : "partial",
-          matchIdentity: endpoint.matchIdentity,
-          httpMethod: endpoint.method,
-          path: endpoint.path,
-          normalizedPath: endpoint.normalizedPath,
-          attributes: {
-            ruleId: endpoint.ruleId,
-            rawPath: endpoint.rawPath,
-            confidence: endpoint.confidence
-          }
-        });
-        context.graph.addRelationship({
-          fromNodeId: currentFn.id,
-          toNodeId: endpointNodeId,
-          relationshipType: "FUNCTION_TO_ENDPOINT",
-          language: currentFn.language,
-          lineNumber: line,
-          confidence: endpoint.confidence,
-          attributes: { ruleId: endpoint.ruleId }
-        });
-      }
-    }
+    // HTTP endpoints come only from static-extract (SER), not a built-in rule engine.
 
     const target = resolveCallTargetId(context, call) ?? resolveCallTarget(context, sourceFile, calleeName);
     if (target && target !== currentFn.id) {
@@ -714,9 +717,6 @@ function isSupportedSourceFile(filePath: string): boolean {
   return /\.(jsx?|tsx?|mjs|cjs)$/i.test(filePath);
 }
 
-function legacyEndpointInferenceEnabled(context: ParseContext): boolean {
-  return context.options.legacyEndpointInference !== false;
-}
 
 function languageOf(filePath: string): NodeLanguage {
   return /\.(ts|tsx)$/i.test(filePath) ? "typescript" : "javascript";
@@ -998,6 +998,368 @@ function resolveComponentUnitId(context: ParseContext, sourceFile: SourceFile, j
     ?? tagName;
 }
 
+/**
+ * Resolve a JSX component tag to a function node id (for RENDERS edges).
+ * Handles: direct imports, local components, React.lazy(() => import(...)), and one-level HOC wrappers (connect/memo/...).
+ */
+function resolveRenderedComponentFunctionId(
+  context: ParseContext,
+  sourceFile: SourceFile,
+  jsx: TsNode,
+  tagName: string
+): string | undefined {
+  if (!Node.isJsxOpeningElement(jsx) && !Node.isJsxSelfClosingElement(jsx)) {
+    return resolveImportedFunctionId(context, sourceFile, tagName);
+  }
+
+  const tagNode = jsx.getTagNameNode();
+  const nameNode = Node.isPropertyAccessExpression(tagNode) ? tagNode.getExpression() : tagNode;
+  const symbol = nameNode.getSymbol?.() ?? tagNode.getSymbol?.();
+  const declarations = [
+    ...(symbol?.getAliasedSymbol?.()?.getDeclarations?.() ?? []),
+    ...(symbol?.getDeclarations?.() ?? [])
+  ];
+
+  for (const declaration of declarations) {
+    const id = resolveComponentDeclarationToFunctionId(context, sourceFile, declaration);
+    if (id) return id;
+  }
+
+  // Fallback: import index (named / default)
+  return resolveImportedFunctionId(context, sourceFile, tagName)
+    ?? resolveFunctionId(context, sourceFile, tagName);
+}
+
+function resolveComponentDeclarationToFunctionId(
+  context: ParseContext,
+  sourceFile: SourceFile,
+  declaration: TsNode
+): string | undefined {
+  // const Editor = lazy(() => import('./Editor'))
+  const lazyId = resolveLazyVariableToFunctionId(context, sourceFile, declaration);
+  if (lazyId) return lazyId;
+
+  // const X = connect(...)(Inner) / memo(Inner) / forwardRef(Inner)
+  const unwrapped = unwrapHocToFunctionId(context, declaration);
+  if (unwrapped) return unwrapped;
+
+  const direct = resolveFunctionDeclarationId(context, declaration);
+  if (direct) return direct;
+
+  // ImportSpecifier / ImportClause → follow module
+  if (Node.isImportSpecifier(declaration) || Node.isImportClause(declaration) || Node.isNamespaceImport(declaration)) {
+    const localName = Node.isImportSpecifier(declaration)
+      ? declaration.getName()
+      : Node.isImportClause(declaration)
+        ? declaration.getDefaultImport()?.getText()
+        : undefined;
+    if (localName) {
+      return resolveImportedFunctionId(context, sourceFile, localName);
+    }
+  }
+
+  return undefined;
+}
+
+function resolveLazyVariableToFunctionId(
+  context: ParseContext,
+  sourceFile: SourceFile,
+  declaration: TsNode
+): string | undefined {
+  if (!Node.isVariableDeclaration(declaration)) return undefined;
+  const initializer = declaration.getInitializer();
+  if (!initializer || !Node.isCallExpression(initializer)) return undefined;
+
+  const calleeText = initializer.getExpression().getText();
+  if (!/(^|\.)lazy$/.test(calleeText)) return undefined;
+
+  const factory = initializer.getArguments()[0];
+  if (!factory || (!Node.isArrowFunction(factory) && !Node.isFunctionExpression(factory))) return undefined;
+
+  const importPath = findDynamicImportModuleSpecifier(factory);
+  if (!importPath) return undefined;
+
+  const targetFile = resolveModuleSourceFile(sourceFile, importPath);
+  if (!targetFile) return undefined;
+  if (!isProjectSourceFile(targetFile.getFilePath(), context.projectRoot)) return undefined;
+
+  const projectFilePath = relativeProjectPath(context.projectRoot, targetFile.getFilePath());
+  const signature = findDefaultExportedFunctionSignature(targetFile);
+  if (signature) {
+    return functionId(context.projectName, projectFilePath, signature);
+  }
+  // Fallback: file default component name from path
+  const baseName = projectFilePath.split("/").filter(Boolean).at(-1)?.replace(/\.[^.]+$/, "") ?? "default";
+  const componentName = baseName === "index"
+    ? projectFilePath.split("/").filter(Boolean).at(-2) ?? "Component"
+    : baseName;
+  return functionId(context.projectName, projectFilePath, `${componentName}()`);
+}
+
+function findDynamicImportModuleSpecifier(factory: TsNode): string | undefined {
+  const consider = (call: import("ts-morph").CallExpression): string | undefined => {
+    const expr = call.getExpression();
+    const isImport = expr.getKind() === SyntaxKind.ImportKeyword || expr.getText() === "import";
+    if (!isImport) return undefined;
+    const arg = call.getArguments()[0];
+    if (arg && (Node.isStringLiteral(arg) || Node.isNoSubstitutionTemplateLiteral(arg))) {
+      return arg.getLiteralText();
+    }
+    return undefined;
+  };
+
+  if (Node.isCallExpression(factory)) {
+    const direct = consider(factory);
+    if (direct) return direct;
+  }
+  if (Node.isArrowFunction(factory) || Node.isFunctionExpression(factory)) {
+    const body = factory.getBody();
+    if (Node.isCallExpression(body)) {
+      const direct = consider(body);
+      if (direct) return direct;
+    }
+    for (const call of body.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      const found = consider(call);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function resolveModuleSourceFile(sourceFile: SourceFile, moduleSpecifier: string): SourceFile | undefined {
+  const project = sourceFile.getProject();
+  const currentDir = path.dirname(sourceFile.getFilePath());
+  const candidates: string[] = [];
+  if (moduleSpecifier.startsWith(".")) {
+    const base = path.resolve(currentDir, moduleSpecifier);
+    // Prefer index / extension forms first; bare `base` may be a directory (EISDIR).
+    candidates.push(
+      `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`,
+      path.join(base, "index.ts"), path.join(base, "index.tsx"),
+      path.join(base, "index.js"), path.join(base, "index.jsx"),
+      base
+    );
+  } else {
+    // Alias / absolute-style specs: match already-loaded source files by path suffix
+    for (const sf of project.getSourceFiles()) {
+      const fp = sf.getFilePath().replace(/\\/g, "/");
+      const spec = moduleSpecifier.replace(/^@\//, "src/");
+      if (fp.endsWith(`/${spec}`) || fp.endsWith(`/${spec}.js`) || fp.endsWith(`/${spec}.jsx`)
+        || fp.endsWith(`/${spec}.ts`) || fp.endsWith(`/${spec}.tsx`)
+        || fp.endsWith(`/${spec}/index.js`) || fp.endsWith(`/${spec}/index.jsx`)
+        || fp.endsWith(`/${spec}/index.ts`) || fp.endsWith(`/${spec}/index.tsx`)) {
+        return sf;
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    // Skip directories — addSourceFileAtPathIfExists throws EISDIR on them.
+    try {
+      if (!fs.existsSync(candidate) || fs.statSync(candidate).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const sf = project.getSourceFile(candidate) ?? project.addSourceFileAtPathIfExists(candidate);
+    if (sf) return sf;
+  }
+  return undefined;
+}
+
+function findDefaultExportedFunctionSignature(sourceFile: SourceFile): string | undefined {
+  // export default function Foo
+  for (const declaration of sourceFile.getFunctions()) {
+    if (declaration.isDefaultExport() && declaration.getName()) {
+      return buildSignature(declaration.getName()!, declaration.getParameters().map((p) => p.getText()));
+    }
+  }
+  // export default connect(...)(Foo) / memo(Foo) / Foo
+  const defaultExport = sourceFile.getDefaultExportSymbol();
+  const declarations = defaultExport?.getDeclarations() ?? [];
+  for (const declaration of declarations) {
+    if (Node.isFunctionDeclaration(declaration) && declaration.getName()) {
+      return buildSignature(declaration.getName()!, declaration.getParameters().map((p) => p.getText()));
+    }
+    if (Node.isVariableDeclaration(declaration)) {
+      const sig = signatureFromVariableComponent(declaration);
+      if (sig) return sig;
+    }
+    if (Node.isExportAssignment(declaration)) {
+      const expr = declaration.getExpression();
+      const sig = signatureFromComponentExpression(sourceFile, expr);
+      if (sig) return sig;
+    }
+  }
+
+  // export default Foo where Foo is a local const/function
+  for (const [name, declarations] of sourceFile.getExportedDeclarations()) {
+    if (name !== "default") continue;
+    for (const declaration of declarations) {
+      if (Node.isFunctionDeclaration(declaration) && declaration.getName()) {
+        return buildSignature(declaration.getName()!, declaration.getParameters().map((p) => p.getText()));
+      }
+      if (Node.isVariableDeclaration(declaration)) {
+        const sig = signatureFromVariableComponent(declaration);
+        if (sig) return sig;
+      }
+      if (Node.isIdentifier(declaration)) {
+        const symbol = declaration.getSymbol();
+        for (const d of symbol?.getDeclarations() ?? []) {
+          const id = resolveFunctionDeclarationId(
+            { projectName: "", projectRoot: path.dirname(sourceFile.getFilePath()) },
+            d
+          );
+          // resolveFunctionDeclarationId needs real project context — use local helpers instead
+          if (Node.isFunctionDeclaration(d) && d.getName()) {
+            return buildSignature(d.getName()!, d.getParameters().map((p) => p.getText()));
+          }
+          if (Node.isVariableDeclaration(d)) {
+            const sig = signatureFromVariableComponent(d);
+            if (sig) return sig;
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: first PascalCase function/component in file
+  for (const declaration of sourceFile.getFunctions()) {
+    const name = declaration.getName();
+    if (name && isPascalCase(name)) {
+      return buildSignature(name, declaration.getParameters().map((p) => p.getText()));
+    }
+  }
+  for (const declaration of sourceFile.getVariableDeclarations()) {
+    if (!isPascalCase(declaration.getName())) continue;
+    const sig = signatureFromVariableComponent(declaration);
+    if (sig) return sig;
+  }
+  return undefined;
+}
+
+function signatureFromVariableComponent(declaration: import("ts-morph").VariableDeclaration): string | undefined {
+  const name = declaration.getName();
+  const initializer = declaration.getInitializer();
+  if (!initializer) return undefined;
+  // peel HOC: connect(a)(b)(Inner) — walk call chain for function/identifier
+  const peeled = peelComponentExpression(initializer);
+  if (peeled && (Node.isArrowFunction(peeled) || Node.isFunctionExpression(peeled))) {
+    return buildSignature(name, peeled.getParameters().map((p) => p.getText()));
+  }
+  if (peeled && Node.isIdentifier(peeled)) {
+    const symbol = peeled.getSymbol();
+    for (const d of symbol?.getDeclarations() ?? []) {
+      if (Node.isFunctionDeclaration(d) && d.getName()) {
+        return buildSignature(d.getName()!, d.getParameters().map((p) => p.getText()));
+      }
+      if (Node.isVariableDeclaration(d)) {
+        const inner = getFunctionInitializer(d.getInitializer());
+        if (inner) return buildSignature(d.getName(), inner.getParameters().map((p) => p.getText()));
+      }
+    }
+  }
+  const direct = getFunctionInitializer(initializer);
+  if (direct) return buildSignature(name, direct.getParameters().map((p) => p.getText()));
+  return undefined;
+}
+
+function signatureFromComponentExpression(sourceFile: SourceFile, expr: TsNode): string | undefined {
+  const peeled = peelComponentExpression(expr);
+  if (!peeled) return undefined;
+  if (Node.isArrowFunction(peeled) || Node.isFunctionExpression(peeled)) {
+    return buildSignature("anonymous", peeled.getParameters().map((p) => p.getText()));
+  }
+  if (Node.isIdentifier(peeled)) {
+    const name = peeled.getText();
+    for (const declaration of sourceFile.getFunctions()) {
+      if (declaration.getName() === name) {
+        return buildSignature(name, declaration.getParameters().map((p) => p.getText()));
+      }
+    }
+    for (const declaration of sourceFile.getVariableDeclarations()) {
+      if (declaration.getName() === name) {
+        return signatureFromVariableComponent(declaration);
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Walk connect(x)(y) / memo(x) / forwardRef(x) to the innermost expression. */
+function peelComponentExpression(expr: TsNode): TsNode | undefined {
+  let current: TsNode | undefined = expr;
+  for (let i = 0; i < 6 && current; i += 1) {
+    if (Node.isCallExpression(current)) {
+      // connect(map)(Component): peel into first arg of the current call
+      const candidate: TsNode | undefined = current.getArguments()[0];
+      if (candidate) {
+        current = candidate;
+        continue;
+      }
+    }
+    if (Node.isParenthesizedExpression(current) || Node.isAsExpression(current)) {
+      current = current.getExpression();
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+function unwrapHocToFunctionId(context: ParseContext, declaration: TsNode): string | undefined {
+  if (!Node.isVariableDeclaration(declaration) && !Node.isExportAssignment(declaration)) {
+    // export default connect(...)(Foo) handled via ExportAssignment in findDefaultExportedFunctionSignature
+    if (Node.isFunctionDeclaration(declaration)) {
+      return resolveFunctionDeclarationId(context, declaration);
+    }
+  }
+  if (Node.isVariableDeclaration(declaration)) {
+    const initializer = declaration.getInitializer();
+    if (!initializer || !Node.isCallExpression(initializer)) return undefined;
+    const peeled = peelComponentExpression(initializer);
+    if (peeled && Node.isIdentifier(peeled)) {
+      const symbol = peeled.getSymbol();
+      for (const d of symbol?.getDeclarations() ?? []) {
+        const id = resolveFunctionDeclarationId(context, d);
+        if (id) return id;
+      }
+    }
+    if (peeled && (Node.isArrowFunction(peeled) || Node.isFunctionExpression(peeled))) {
+      return resolveFunctionDeclarationId(context, declaration);
+    }
+  }
+  return undefined;
+}
+
+function ensurePlaceholderFunction(context: ParseContext, functionNodeId: string, language: NodeLanguage): void {
+  if (context.graph.hasFunction(functionNodeId)) return;
+  // id format: project#path::signature
+  const hash = functionNodeId.indexOf("#");
+  const rest = hash >= 0 ? functionNodeId.slice(hash + 1) : functionNodeId;
+  const sep = rest.indexOf("::");
+  const projectFilePath = sep >= 0 ? rest.slice(0, sep) : rest;
+  const signature = sep >= 0 ? rest.slice(sep + 2) : "Component()";
+  const name = signature.replace(/\(.*\)$/, "") || "Component";
+  context.graph.addFunction({
+    id: functionNodeId,
+    name,
+    qualifiedName: functionNodeId,
+    language,
+    projectFilePath,
+    startLine: 1,
+    endLine: 1,
+    nodeKind: "function",
+    subKind: "placeholder_component",
+    signature,
+    returnType: "ReactElement",
+    modifiers: [],
+    isAsync: false,
+    isStatic: false,
+    isConstructor: false,
+    isPlaceholder: true
+  });
+}
+
 function resolveJsxTagUnitId(context: ParseContext, jsx: TsNode): string | undefined {
   if (!Node.isJsxOpeningElement(jsx) && !Node.isJsxSelfClosingElement(jsx)) return undefined;
   const tagNode = jsx.getTagNameNode();
@@ -1111,7 +1473,6 @@ function nextPagesApiEndpoint(projectFilePath: string): { method: string; path: 
 }
 
 function collectRoutePrefixes(sourceFile: SourceFile, context: ParseContext): void {
-  const tracer = new ValueTracer();
   for (const declaration of sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration)) {
     const name = declaration.getName();
     const initializer = declaration.getInitializer();
@@ -1126,7 +1487,7 @@ function collectRoutePrefixes(sourceFile: SourceFile, context: ParseContext): vo
       ? objectPrefix.getInitializer()
       : firstArg;
     if (!prefixExpression || !Node.isExpression(prefixExpression)) continue;
-    const prefix = tracer.traceExpression(prefixExpression).value;
+    const prefix = literalText(prefixExpression);
     if (prefix?.startsWith("/")) {
       context.routePrefixes.set(name, normalizeRoutePath(prefix));
     }
@@ -1139,7 +1500,7 @@ function collectRoutePrefixes(sourceFile: SourceFile, context: ParseContext): vo
     const prefixArg = args[0];
     const routerArg = args[1];
     if (!prefixArg || !routerArg || !Node.isExpression(prefixArg) || !Node.isIdentifier(routerArg)) continue;
-    const prefix = new ValueTracer().traceExpression(prefixArg).value;
+    const prefix = literalText(prefixArg);
     if (!prefix?.startsWith("/")) continue;
     const existing = context.routePrefixes.get(routerArg.getText()) ?? "";
     context.routePrefixes.set(routerArg.getText(), normalizeRoutePath(`${prefix}/${existing}`));
@@ -1210,10 +1571,36 @@ function resolveRouteHandlerTarget(context: ParseContext, sourceFile: SourceFile
   return undefined;
 }
 
-function literalText(node: TsNode | undefined): string | undefined {
-  if (!node) return undefined;
+function literalText(node: TsNode | undefined, depth = 0): string | undefined {
+  if (!node || depth > 4) return undefined;
   if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) return node.getLiteralText();
-  if (Node.isExpression(node)) return new ValueTracer().traceExpression(node).value;
+  if (Node.isTemplateExpression(node)) {
+    let out = node.getHead().getLiteralText();
+    for (const span of node.getTemplateSpans()) {
+      const part = literalText(span.getExpression(), depth + 1);
+      out += part ?? "{param}";
+      out += span.getLiteral().getLiteralText();
+    }
+    return out;
+  }
+  if (Node.isIdentifier(node)) {
+    const symbol = node.getSymbol();
+    for (const declaration of symbol?.getDeclarations() ?? []) {
+      if (Node.isVariableDeclaration(declaration)) {
+        const value = literalText(declaration.getInitializer(), depth + 1);
+        if (value) return value;
+      }
+    }
+  }
+  if (Node.isPropertyAccessExpression(node)) {
+    const symbol = node.getSymbol();
+    for (const declaration of symbol?.getDeclarations() ?? []) {
+      if (Node.isPropertyAssignment(declaration)) {
+        const value = literalText(declaration.getInitializer(), depth + 1);
+        if (value) return value;
+      }
+    }
+  }
   return undefined;
 }
 
