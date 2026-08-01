@@ -34,9 +34,23 @@ export class GraphBuilder {
   }
 
   addFunction(fn: CodeFunction): void {
-    if (this.functionIds.has(fn.id)) return;
+    if (this.functionIds.has(fn.id)) {
+      // RENDERS may create a placeholder before the target file is parsed.
+      // Upgrade placeholder entries when the real definition arrives.
+      if (!fn.isPlaceholder) {
+        const index = this.graph.functions.findIndex((existing) => existing.id === fn.id);
+        if (index >= 0 && this.graph.functions[index].isPlaceholder) {
+          this.graph.functions[index] = fn;
+        }
+      }
+      return;
+    }
     this.functionIds.add(fn.id);
     this.graph.functions.push(fn);
+  }
+
+  hasFunction(id: string): boolean {
+    return this.functionIds.has(id);
   }
 
   addEndpoint(endpoint: CodeEndpoint): void {
