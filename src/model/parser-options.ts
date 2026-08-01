@@ -2,7 +2,7 @@ export interface ParserOptions {
   projectRoot: string;
   projectName?: string;
   tsConfigPath?: string;
-  endpointRulesDir?: string;
+  /** SER rule files for static-extract (HTTP / UI facts). */
   ruleSources?: string[];
   ruleTexts?: string[];
   traceRuleSources?: string[];
@@ -11,7 +11,6 @@ export interface ParserOptions {
   externalValuesFile?: string;
   staticExtractBuiltinRules?: boolean;
   staticExtractPresetRules?: boolean | string[];
-  legacyEndpointInference?: boolean;
   include?: string[];
   exclude?: string[];
   gitRepoUrl?: string;
