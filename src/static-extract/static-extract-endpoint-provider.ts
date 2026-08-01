@@ -87,8 +87,12 @@ export class StaticExtractEndpointProvider {
     const pathValue = fact.fields.path ?? fact.fields.url ?? fact.fields.route;
     if (!pathValue) return;
     if (isUnsafeFileRouteFact(fact)) return;
+    // Drop non-path noise from bare get/post matches (Map.get(id), get(key), …)
+    // and unresolved identifiers that never look like an HTTP path.
+    if (!looksLikeHttpPath(pathValue)) return;
 
     const method = normalizeHttpMethod(fact.fields.method, fact.fields.client);
+    if (!isKnownHttpMethod(method)) return;
     const normalizedPath = normalizeHttpPath(pathValue);
     const matchIdentity = `HTTP:${method}:${normalizedPath}`;
     const projectFilePath = fact.projectFilePath;
@@ -396,6 +400,26 @@ function normalizeHttpMethod(method: string | undefined, client: string | undefi
   if (value === "DEL") return "DELETE";
   if (["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(value)) return value;
   return client?.toLowerCase() === "fetch" ? "GET" : value;
+}
+
+const KNOWN_HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+
+function isKnownHttpMethod(method: string): boolean {
+  return KNOWN_HTTP_METHODS.has(method);
+}
+
+/** True when the traced string looks like an HTTP path/URL, not a random get() argument. */
+function looksLikeHttpPath(raw: string): boolean {
+  const value = raw.trim();
+  if (!value) return false;
+  if (/^https?:\/\//i.test(value) || value.startsWith("//")) return true;
+  if (value.startsWith("/")) return true;
+  // Partial template traces such as `{serverUrl}/svg/{param}`
+  if (value.includes("/") && (value.startsWith("{") || value.includes("{param}"))) return true;
+  // Relative gateway / api paths without leading slash
+  if (/(?:^|\/)(?:cooper_gateway|gateway|api)\b/i.test(value)) return true;
+  if (value.startsWith("api/") || value.startsWith("cooper_gateway")) return true;
+  return false;
 }
 
 function findHandlerFunction(functions: CodeFunction[], projectFilePath: string, handler: string | undefined): CodeFunction | undefined {
