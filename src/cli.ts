@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { ReactCodeGraphParser } from "./parser/react-code-graph-parser.js";
 import type { ParseRequest } from "./model/process-protocol.js";
 import { toGraphDelta } from "./model/process-protocol.js";
@@ -9,7 +8,6 @@ import { toGraphDelta } from "./model/process-protocol.js";
 interface CliArgs {
   project?: string;
   out?: string;
-  rules?: string;
   serRule?: string[];
   serRuleText?: string[];
   traceRule?: string[];
@@ -17,7 +15,6 @@ interface CliArgs {
   externalValues?: string;
   staticExtractBuiltin?: boolean;
   staticExtractPreset?: boolean | string[];
-  noLegacyEndpointInference?: boolean;
   tsconfig?: string;
   projectName?: string;
   include?: string[];
@@ -41,13 +38,11 @@ async function main(): Promise<void> {
   }
 
   const projectRoot = path.resolve(args.project);
-  const rulesDir = args.rules ? path.resolve(args.rules) : defaultRulesDir();
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot,
     projectName: args.projectName,
     tsConfigPath: args.tsconfig ? path.resolve(args.tsconfig) : undefined,
-    endpointRulesDir: rulesDir,
     ruleSources: args.serRule?.map((rule) => path.resolve(rule)),
     ruleTexts: args.serRuleText,
     traceRuleSources: args.traceRule?.map((rule) => path.resolve(rule)),
@@ -55,7 +50,6 @@ async function main(): Promise<void> {
     externalValuesFile: args.externalValues ? path.resolve(args.externalValues) : undefined,
     staticExtractBuiltinRules: args.staticExtractBuiltin,
     staticExtractPresetRules: args.staticExtractPreset,
-    legacyEndpointInference: !args.noLegacyEndpointInference,
     include: args.include,
     exclude: args.exclude
   });
@@ -87,9 +81,6 @@ function parseArgs(argv: string[]): CliArgs {
     } else if ((arg === "--out" || arg === "-o") && next) {
       output.out = next;
       index += 1;
-    } else if (arg === "--rules" && next) {
-      output.rules = next;
-      index += 1;
     } else if (arg === "--ser-rule" && next) {
       output.serRule = [...output.serRule ?? [], next];
       index += 1;
@@ -114,8 +105,6 @@ function parseArgs(argv: string[]): CliArgs {
       } else {
         output.staticExtractPreset = true;
       }
-    } else if (arg === "--no-legacy-endpoint-inference") {
-      output.noLegacyEndpointInference = true;
     } else if (arg === "--tsconfig" && next) {
       output.tsconfig = next;
       index += 1;
@@ -135,6 +124,9 @@ function parseArgs(argv: string[]): CliArgs {
       output.stdio = true;
     } else if (arg === "--delta") {
       output.delta = true;
+    } else if (arg === "--rules" || arg === "--no-legacy-endpoint-inference") {
+      // Removed legacy YAML rule engine flags; ignore for backward compatibility.
+      if (arg === "--rules" && next && !next.startsWith("-")) index += 1;
     }
   }
   return output;
@@ -146,24 +138,30 @@ async function runProcessProtocol(args: CliArgs): Promise<void> {
     : JSON.parse(await readStdin()) as ParseRequest;
 
   const projectRoot = path.resolve(requiredProjectRoot(request));
-  const rulesDir = resolveRulesDir(args.rules, request);
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot,
     projectName: request.projectName,
     tsConfigPath: stringOption(request, "tsconfig") ?? stringOption(request, "tsConfigPath"),
-    endpointRulesDir: rulesDir,
-    ruleSources: request.ruleSources,
-    ruleTexts: request.ruleTexts ?? arrayOption(request, "ruleTexts"),
-    traceRuleSources: request.traceRuleSources,
-    traceRuleTexts: request.traceRuleTexts ?? arrayOption(request, "traceRuleTexts"),
+    ruleSources: [
+      ...(request.ruleSources ?? []),
+      ...(args.serRule?.map((rule) => path.resolve(rule)) ?? [])
+    ],
+    ruleTexts: request.ruleTexts ?? arrayOption(request, "ruleTexts") ?? args.serRuleText,
+    traceRuleSources: [
+      ...(request.traceRuleSources ?? []),
+      ...(args.traceRule?.map((rule) => path.resolve(rule)) ?? [])
+    ],
+    traceRuleTexts: request.traceRuleTexts ?? arrayOption(request, "traceRuleTexts") ?? args.traceRuleText,
     externalValues: request.externalValues,
-    externalValuesFile: stringOption(request, "externalValuesFile"),
-    staticExtractBuiltinRules: booleanOption(request, "staticExtractBuiltinRules") ?? booleanOption(request, "staticExtractBuiltin"),
-    staticExtractPresetRules: request.staticExtractPresetRules ?? booleanOption(request, "staticExtractPresetRules") ?? arrayOption(request, "staticExtractPresetRules"),
-    legacyEndpointInference: booleanOption(request, "legacyEndpointInference"),
-    include: arrayOption(request, "include"),
-    exclude: arrayOption(request, "exclude"),
+    externalValuesFile: stringOption(request, "externalValuesFile") ?? (args.externalValues ? path.resolve(args.externalValues) : undefined),
+    staticExtractBuiltinRules: booleanOption(request, "staticExtractBuiltinRules") ?? booleanOption(request, "staticExtractBuiltin") ?? args.staticExtractBuiltin,
+    staticExtractPresetRules: request.staticExtractPresetRules
+      ?? booleanOption(request, "staticExtractPresetRules")
+      ?? arrayOption(request, "staticExtractPresetRules")
+      ?? args.staticExtractPreset,
+    include: arrayOption(request, "include") ?? args.include,
+    exclude: arrayOption(request, "exclude") ?? args.exclude,
     gitRepoUrl: request.gitRepoUrl,
     gitBranch: request.gitBranch
   });
@@ -205,7 +203,6 @@ function requestFromArgs(args: CliArgs, projectRoot: string): ParseRequest {
       ...(args.externalValues ? { externalValuesFile: path.resolve(args.externalValues) } : {}),
       ...(args.staticExtractBuiltin ? { staticExtractBuiltin: true } : {}),
       ...(args.staticExtractPreset ? { staticExtractPresetRules: args.staticExtractPreset } : {}),
-      ...(args.noLegacyEndpointInference ? { legacyEndpointInference: false } : {}),
       ...(args.include ? { include: args.include } : {}),
       ...(args.exclude ? { exclude: args.exclude } : {})
     }
@@ -223,13 +220,6 @@ function requiredProjectRoot(request: ParseRequest): string {
     throw new Error("ParseRequest.projectRoot is required for frontend-code-graph --stdio/--request");
   }
   return projectRoot;
-}
-
-function resolveRulesDir(cliRules: string | undefined, request: ParseRequest): string | undefined {
-  const fromOptions = stringOption(request, "rules") ?? stringOption(request, "endpointRulesDir");
-  if (cliRules) return path.resolve(cliRules);
-  if (fromOptions) return path.resolve(fromOptions);
-  return defaultRulesDir();
 }
 
 function stringOption(request: ParseRequest, key: string): string | undefined {
@@ -267,20 +257,12 @@ function readStdin(): Promise<string> {
   });
 }
 
-function defaultRulesDir(): string {
-  const thisFile = fileURLToPath(import.meta.url);
-  const distRoot = path.dirname(thisFile);
-  const repoRules = path.resolve(distRoot, "../endpoint-rules");
-  if (fs.existsSync(repoRules)) return repoRules;
-  return path.resolve(process.cwd(), "endpoint-rules");
-}
-
 function printUsage(): void {
   process.stderr.write(
       `Usage:\n` +
-      `  frontend-code-graph --project <path> [--include <glob>] [--exclude <glob>] [--rules <dir>] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--no-legacy-endpoint-inference] [--out graph.json] [--delta]\n` +
-      `  frontend-code-graph --stdio [--rules <dir>]\n` +
-      `  frontend-code-graph --request request.json [--rules <dir>] [--out delta.json]\n`
+      `  frontend-code-graph --project <path> [--include <glob>] [--exclude <glob>] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--out graph.json] [--delta]\n` +
+      `  frontend-code-graph --stdio\n` +
+      `  frontend-code-graph --request request.json [--out delta.json]\n`
   );
 }
 
