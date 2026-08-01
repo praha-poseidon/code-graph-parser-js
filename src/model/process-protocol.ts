@@ -10,8 +10,10 @@ import type {
 
 const CORE_RELATIONSHIP_TYPES = new Set<RelationshipType>([
   "PACKAGE_TO_UNIT",
+  "PACKAGE_TO_PACKAGE",
   "UNIT_TO_FUNCTION",
   "CALLS",
+  "RENDERS",
   "EXTENDS",
   "IMPLEMENTS",
   "OVERRIDES",
