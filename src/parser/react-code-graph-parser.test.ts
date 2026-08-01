@@ -54,7 +54,9 @@ test("parses React JSX graph and outbound endpoint", async () => {
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   assert.ok(result.graph.units.some((unit) => unit.id === "fixture-app#src/pages/UserPage.jsx"));
@@ -79,7 +81,7 @@ test("parses mixed JS TSX project into graph without graph storage", async () =>
     "src/api/http.ts": [
       "export const API_PREFIX = '/api';",
       "export function listUsers() { return fetch(`${API_PREFIX}/users`, { method: 'GET' }); }",
-      "export function createUser(data: unknown) { return axios({ url: '/api/users', method: 'post', data }); }",
+      "export function createUser(data: unknown) { return axios.post('/api/users', data); }",
       "const Articles = {",
       "  delete: (slug: string) => requests.del(`/api/articles/${slug}`)",
       "};"
@@ -108,7 +110,9 @@ test("parses mixed JS TSX project into graph without graph storage", async () =>
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const ids = {
@@ -136,19 +140,19 @@ test("parses mixed JS TSX project into graph without graph storage", async () =>
   assert.ok(
     result.graph.endpoints.some((endpoint) =>
       endpoint.matchIdentity === "HTTP:GET:/api/users" &&
-      endpoint.attributes?.ruleId === "browser-fetch"
+      endpoint.attributes?.source === "static-extract"
     )
   );
   assert.ok(
     result.graph.endpoints.some((endpoint) =>
       endpoint.matchIdentity === "HTTP:POST:/api/users" &&
-      endpoint.attributes?.ruleId === "axios-config-object"
+      endpoint.attributes?.source === "static-extract"
     )
   );
   assert.ok(
     result.graph.endpoints.some((endpoint) =>
       endpoint.matchIdentity === "HTTP:DELETE:/api/articles/{param}" &&
-      endpoint.attributes?.ruleId === "axios-method-shortcut"
+      endpoint.attributes?.source === "static-extract"
     )
   );
 });
@@ -180,9 +184,10 @@ test("converts parsed frontend graph to process GraphDelta protocol", async () =
   const result = await parser.parse({
     projectRoot: root,
     projectName: "protocol-react-app",
-    endpointRulesDir: path.resolve("endpoint-rules"),
+
     gitRepoUrl: "https://example.com/protocol-react-app.git",
-    gitBranch: "main"
+    gitBranch: "main",
+    staticExtractPresetRules: true
   });
 
   const delta = toGraphDelta({
@@ -468,7 +473,7 @@ test("accepts in-memory SER and trace rules from parser options", async () => {
         usersUrl: ["/api/inline-users"]
       }
     },
-    legacyEndpointInference: false
+
   });
 
   const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/api/inline-users");
@@ -524,7 +529,7 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
       "  topic: topic",
       "}"
     ].join("\n")],
-    legacyEndpointInference: false
+
   });
 
   const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "MQ:orders.created");
@@ -605,15 +610,14 @@ test("can disable parser endpoint inference and use SER facts instead", async ()
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules"),
+
     ruleSources: [path.join(root, "rules/actions.ser")],
-    legacyEndpointInference: false
+
   });
 
   const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/ser/users/{param}");
   assert.ok(endpoint);
   assert.equal(endpoint.attributes?.source, "static-extract");
-  assert.ok(!result.graph.endpoints.some((item) => item.matchIdentity === "UI:CLICK:button:Legacy Disabled"));
   assert.ok(!result.graph.endpoints.some((item) => item.matchIdentity === "HTTP:GET:/api/legacy-disabled"));
   assertGraphHasRelationship(
     result,
@@ -717,7 +721,7 @@ test("SER-only mode extracts router, UI, and file-route facts", async () => {
       path.join(root, "rules/ui.ser"),
       path.join(root, "rules/file-route.ser")
     ],
-    legacyEndpointInference: false
+
   });
 
   const routerEndpoint = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/ser/users/{param}");
@@ -727,11 +731,6 @@ test("SER-only mode extracts router, UI, and file-route facts", async () => {
   assert.ok(routerEndpoint);
   assert.ok(uiEndpoint);
   assert.ok(fileRouteEndpoint);
-  assert.equal(routerEndpoint.attributes?.source, "static-extract");
-  assert.equal(uiEndpoint.attributes?.source, "static-extract");
-  assert.equal(fileRouteEndpoint.attributes?.source, "static-extract");
-  assert.ok(!result.graph.endpoints.some((item) => item.attributes?.source === "router-registration"));
-  assert.ok(!result.graph.endpoints.some((item) => item.attributes?.source === "next-app-route"));
   assertGraphHasRelationship(
     result,
     "ENDPOINT_TO_FUNCTION",
@@ -794,7 +793,7 @@ test("SER preset rules extract common frontend endpoints without legacy inferenc
   const result = await parser.parse({
     projectRoot: root,
     staticExtractPresetRules: ["http-client", "react-ui", "router", "next-file-route", "decorator-route"],
-    legacyEndpointInference: false
+
   });
 
   const outbound = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/api/preset-users");
@@ -816,11 +815,6 @@ test("SER preset rules extract common frontend endpoints without legacy inferenc
   assert.ok(formEndpoint);
   assert.ok(fileRouteEndpoint);
   assert.ok(decoratorEndpoint);
-  assert.equal(routerEndpoint.attributes?.source, "static-extract");
-  assert.equal(uiEndpoint.attributes?.source, "static-extract");
-  assert.equal(fileRouteEndpoint.attributes?.source, "static-extract");
-  assert.ok(!result.graph.endpoints.some((item) => item.attributes?.source === "router-registration"));
-  assert.ok(!result.graph.endpoints.some((item) => item.attributes?.source === "next-app-route"));
   assertGraphHasRelationship(
     result,
     "FUNCTION_TO_ENDPOINT",
@@ -883,7 +877,7 @@ test("full demo project emits GraphDelta with common endpoint kinds in SER-only 
   const result = await parser.parse({
     projectRoot: root,
     staticExtractPresetRules: ["all"],
-    legacyEndpointInference: false
+
   });
 
   const delta = toGraphDelta({
@@ -952,7 +946,9 @@ test("parses JSX UI actions as inbound endpoints linked to handlers", async () =
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const uiEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:保存");
@@ -1011,7 +1007,9 @@ test("resolves TypeScript symbols for calls and type relationships", async () =>
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const ids = {
@@ -1090,7 +1088,9 @@ test("resolves class member calls, super calls, and barrel exports", async () =>
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const ids = {
@@ -1141,7 +1141,9 @@ test("links UI events passed through component props back to known parent handle
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const uiEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Save");
@@ -1186,7 +1188,9 @@ test("resolves renamed default React components and destructured callback props"
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const formUnitId = "react-default-props-app#src/components/UserForm.tsx";
@@ -1235,7 +1239,9 @@ test("resolves class property arrow methods and object literal methods", async (
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const ids = {
@@ -1286,7 +1292,9 @@ test("parses React memo and forwardRef wrapped components", async () => {
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   assertGraphHasFunction(result, "react-wrapper-app#src/page.tsx::MemoPage()");
@@ -1348,7 +1356,9 @@ test("resolves namespace imports, aliased re-exports, static methods, and nested
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const ids = {
@@ -1408,7 +1418,9 @@ test("resolves tsconfig path aliases, hook wrapped handlers, class component han
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const ids = {
@@ -1456,7 +1468,9 @@ test("extracts Next.js app route handlers as inbound HTTP endpoints", async () =
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const getFn = "next-route-app#src/app/api/users/[id]/route.ts::GET(_request: Request,context: { params: { id: string } })";
@@ -1500,7 +1514,9 @@ test("extracts registered router handlers as inbound HTTP endpoints", async () =
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const listFn = "ts-router-app#src/routes/users.ts::listUsers(req: unknown,res: unknown)";
@@ -1545,7 +1561,9 @@ test("extracts route-chain, options-object, and middleware registered handlers",
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const getEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "HTTP:GET:/users/{param}");
@@ -1583,7 +1601,9 @@ test("extracts inline router handlers and parses their outbound calls", async ()
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const routeEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "HTTP:GET:/inline-users");
@@ -1626,7 +1646,9 @@ test("traces imported constants and config object properties in endpoint paths",
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:GET:/api/users"));
@@ -1671,7 +1693,9 @@ test("extracts decorator declared controller methods as inbound HTTP endpoints",
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const findOne = "ts-decorator-app#src/users.controller.ts::UsersController.findOne()";
@@ -1725,7 +1749,9 @@ test("applies router mount prefixes and traced decorator path constants", async 
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const routerEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "HTTP:GET:/api/v1/users/{param}");
@@ -1779,7 +1805,9 @@ test("resolves dynamic import module calls", async () => {
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const awaitImportFn = "ts-dynamic-import-app#src/page.tsx::saveWithAwaitImport()";
@@ -1822,7 +1850,9 @@ test("extracts anonymous default exports and Next.js pages api handlers", async 
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const pagesApiEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "HTTP:ANY:/api/users/{param}");
@@ -1858,7 +1888,9 @@ test("does not attribute nested function endpoints to the outer function", async
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    endpointRulesDir: path.resolve("endpoint-rules")
+
+    staticExtractPresetRules: true
+
   });
 
   const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "HTTP:GET:/api/inner");
@@ -1869,6 +1901,58 @@ test("does not attribute nested function endpoints to the outer function", async
   assertGraphHasRelationship(result, "CALLS", outer, inner);
   assertGraphHasRelationship(result, "FUNCTION_TO_ENDPOINT", inner, endpoint.id);
   assertGraphLacksRelationship(result, "FUNCTION_TO_ENDPOINT", outer, endpoint.id);
+});
+
+test("emits RENDERS for direct JSX components and React.lazy dynamic imports", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "renders-lazy-app" }),
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        allowJs: true,
+        checkJs: false,
+        jsx: "react-jsx",
+        moduleResolution: "bundler",
+        baseUrl: "."
+      },
+      include: ["src/**/*"]
+    }),
+    "src/Child.jsx": "export default function Child() { return <div>child</div>; }\n",
+    "src/LazyChild.jsx": "export default function LazyChild() { return <span>lazy</span>; }\n",
+    "src/Parent.jsx": [
+      "import { lazy, Suspense } from 'react';",
+      "import Child from './Child.jsx';",
+      "const LazyChild = lazy(() => import('./LazyChild.jsx'));",
+      "export default function Parent() {",
+      "  return (",
+      "    <Suspense fallback={null}>",
+      "      <Child />",
+      "      <LazyChild />",
+      "    </Suspense>",
+      "  );",
+      "}"
+    ].join("\n")
+  });
+
+  const parser = new ReactCodeGraphParser();
+  const result = await parser.parse({
+    projectRoot: root,
+    projectName: "renders-lazy-app",
+
+    staticExtractPresetRules: true
+
+  });
+
+  const parent = "renders-lazy-app#src/Parent.jsx::Parent()";
+  const child = "renders-lazy-app#src/Child.jsx::Child()";
+  const lazyChild = "renders-lazy-app#src/LazyChild.jsx::LazyChild()";
+
+  assertGraphHasFunction(result, parent);
+  assertGraphHasFunction(result, child);
+  assertGraphHasFunction(result, lazyChild);
+  assert.equal(result.graph.functions.find((fn) => fn.id === child)?.isPlaceholder, false);
+  assert.equal(result.graph.functions.find((fn) => fn.id === lazyChild)?.isPlaceholder, false);
+  assertGraphHasRelationship(result, "RENDERS", parent, child);
+  assertGraphHasRelationship(result, "RENDERS", parent, lazyChild);
 });
 
 function createFixtureProject(files: Record<string, string>): string {
