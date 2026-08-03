@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   Node,
   SyntaxKind,
+  ts,
   type CallExpression,
   type ClassDeclaration,
   type Node as TsNode,
@@ -200,7 +201,7 @@ export class ReactCodeGraphParser {
         node: declaration,
         bodyNode: declaration.getBody(),
         isAsync: declaration.isAsync(),
-        isComponent: isPascalCase(name) && containsJsx(declaration),
+        isComponent: isPascalCase(name) && containsJsx(declaration.compilerNode),
         subKind: isHookName(name) ? "react_hook" : undefined
       });
     }
@@ -230,7 +231,7 @@ export class ReactCodeGraphParser {
         node: declaration,
         bodyNode: initializer.getBody(),
         isAsync: initializer.isAsync(),
-        isComponent: isPascalCase(name) && containsJsx(initializer),
+        isComponent: isPascalCase(name) && containsJsx(initializer.compilerNode),
         subKind: isHookName(name) ? "react_hook" : undefined
       });
     }
@@ -244,8 +245,8 @@ export class ReactCodeGraphParser {
         node: exportAssignment,
         bodyNode: exportExpression.getBody(),
         isAsync: exportExpression.isAsync(),
-        isComponent: containsJsx(exportExpression),
-        subKind: containsJsx(exportExpression) ? "react_default_component" : "default_export_function"
+        isComponent: containsJsx(exportExpression.compilerNode),
+        subKind: containsJsx(exportExpression.compilerNode) ? "react_default_component" : "default_export_function"
       });
     }
 
@@ -468,16 +469,30 @@ function languageOf(filePath: string): NodeLanguage {
   return /\.(ts|tsx)$/i.test(filePath) ? "typescript" : "javascript";
 }
 
-function containsJsx(node: TsNode): boolean {
-  return node.getDescendants().some((descendant) =>
-    Node.isJsxElement(descendant) ||
-    Node.isJsxSelfClosingElement(descendant) ||
-    Node.isJsxFragment(descendant)
-  );
+function containsJsx(rawNode: ts.Node): boolean {
+  // Walk raw compiler nodes via ts.forEachChild and early-exit on the first JSX node.
+  // Semantically identical to getDescendants().some(isJsx*), but allocates no cached
+  // ts-morph wrappers (the original materialized every descendant of the subtree first).
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    const kind = node.kind;
+    if (
+      kind === SyntaxKind.JsxElement ||
+      kind === SyntaxKind.JsxSelfClosingElement ||
+      kind === SyntaxKind.JsxFragment
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(rawNode, visit);
+  return found;
 }
 
 function isReactClassComponent(declaration: ClassDeclaration): boolean {
-  return declaration.getExtends()?.getText().includes("Component") === true && containsJsx(declaration);
+  return declaration.getExtends()?.getText().includes("Component") === true && containsJsx(declaration.compilerNode);
 }
 
 function inferReturnType(candidate: FunctionCandidate): string {
@@ -979,8 +994,23 @@ function findDefaultExportedUnitName(sourceFile: SourceFile | undefined): string
 
 
 function localDescendants(body: TsNode): TsNode[] {
-  const descendants = Node.isCallExpression(body) ? [body, ...body.getDescendants()] : body.getDescendants();
-  return descendants.filter((node) => node === body || !hasNestedFunctionBoundary(node, body));
+  // Only materialize wrappers for the node kinds callers actually consume (CallExpression +
+  // JSX opening/self-closing tags). The previous body.getDescendants() wrapped the entire body
+  // subtree (hundreds of nodes per function) just to filter down to a handful; getDescendantsOfKind
+  // walks raw compiler nodes and wraps only the matches. Boundary filtering is preserved.
+  const found: TsNode[] = [];
+  if (Node.isCallExpression(body)) found.push(body);
+  // Calls: single kind, getDescendantsOfKind already returns document order.
+  for (const node of body.getDescendantsOfKind(SyntaxKind.CallExpression)) found.push(node);
+  // JSX: two kinds — collect both then sort by source position to preserve document order.
+  // (Concatenating per-kind would reorder an earlier JsxSelfClosing behind a later JsxOpening,
+  // which changes which occurrence wins dedup for a multi-render edge.)
+  const jsx: TsNode[] = [];
+  for (const node of body.getDescendantsOfKind(SyntaxKind.JsxOpeningElement)) jsx.push(node);
+  for (const node of body.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement)) jsx.push(node);
+  jsx.sort((a, b) => a.getStart() - b.getStart());
+  for (const node of jsx) found.push(node);
+  return found.filter((node) => node === body || !hasNestedFunctionBoundary(node, body));
 }
 
 function hasNestedFunctionBoundary(node: TsNode, root: TsNode): boolean {
