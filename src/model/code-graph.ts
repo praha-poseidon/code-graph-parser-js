@@ -65,7 +65,8 @@ export interface CodeEndpoint extends CodeNode {
   direction: "inbound" | "outbound";
   isExternal?: boolean;
   serviceName?: string;
-  parseLevel?: "full" | "partial" | "unknown";
+  /** full/partial/unknown from SER; config/unresolved from platform path dict. */
+  parseLevel?: "full" | "partial" | "unknown" | "config" | "unresolved";
   targetService?: string;
   matchIdentity: string;
   httpMethod?: string;
@@ -78,6 +79,8 @@ export interface CodeEndpoint extends CodeNode {
   routePath?: string;
   componentName?: string;
   topic?: string;
+  /** MQ consumer group (metadata; not MATCHES identity). Aligned with Java MqEndpoint.group. */
+  group?: string;
   operation?: string;
   brokerType?: string;
   keyPattern?: string;
