@@ -162,6 +162,7 @@ async function runProcessProtocol(args: CliArgs): Promise<void> {
       ?? args.staticExtractPreset,
     include: arrayOption(request, "include") ?? args.include,
     exclude: arrayOption(request, "exclude") ?? args.exclude,
+    sourceFiles: request.sourceFiles,
     gitRepoUrl: request.gitRepoUrl,
     gitBranch: request.gitBranch
   });
