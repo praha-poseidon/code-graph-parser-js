@@ -45,7 +45,8 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
       "",
       "let method =",
       "  from argument[1] take attr(method)",
-      "default \"GET\"",
+      // SER grammar: fallback (not default) — aligned with static-extract-js / Java.
+      "fallback \"GET\"",
       "",
       "build {",
       "  client: \"fetch\"",
@@ -64,7 +65,7 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
       "",
       "let method =",
       "  from argument[0] take attr(method)",
-      "default \"GET\"",
+      "fallback \"GET\"",
       "",
       "build {",
       "  client: \"axios\"",
@@ -140,8 +141,9 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
       "",
       "find decorator [Get,Post,Put,Patch,Delete,Head,Options]",
       "",
+      // static-extract-js: `from decorator Name on class` (not `on class Name`).
       "let basePath =",
-      "  from decorator on class Controller take value",
+      "  from decorator Controller on class take value",
       "",
       "let methodName =",
       "  from decorator take name",
@@ -195,7 +197,8 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
       "build {",
       "  endpointType: \"REDIS\"",
       "  direction: \"outbound\"",
-      "  command: command | normalize upper | map { DEL: DELETE }",
+      // No partial map: map miss → empty (Java/JS extract). DEL→DELETE in parser normalize.
+      "  command: command | normalize upper",
       "  keyPattern: keyPattern",
       "}"
     ].join("\n"),
@@ -237,7 +240,8 @@ function routerRule(owner: string): string {
     "  from handler take reference",
     "",
     "build {",
-    "  method: method | normalize upper | map { DEL: DELETE }",
+    // Partial map { DEL: DELETE } empties non-keys under map-miss→empty semantics.
+    "  method: method | normalize upper",
     "  direction: \"inbound\"",
     "  path: path | normalize httpPath",
     "  handler: handler",
@@ -261,7 +265,7 @@ function httpClientMethodShortcutRule(owner: string): string {
     "",
     "build {",
     `  client: "${owner}"`,
-    "  method: method | normalize upper | map { DEL: DELETE }",
+    "  method: method | normalize upper",
     "  path: path",
     "}"
   ].join("\n");
@@ -276,7 +280,7 @@ function reactUiRule(tag: string, event: string, handlerProp: string, kind: stri
     "",
     "let text =",
     ...textSources.map((source) => `  ${source}`),
-    `  default ${fallbackText}`,
+    `  fallback ${fallbackText}`,
     "",
     "let handler =",
     `  from prop ${handlerProp} take reference`,
