@@ -36,7 +36,8 @@ export interface ParseRequest {
   ruleTexts?: string[];
   traceRuleSources?: string[];
   traceRuleTexts?: string[];
-  externalValues?: Record<string, Record<string, string[]>>;
+  /** Flat identity dict or wire { identity: {...} } */
+  externalValues?: Record<string, unknown>;
   staticExtractPresetRules?: boolean | string[];
   options?: Record<string, unknown>;
 }
@@ -147,6 +148,7 @@ export interface JavaCodeEndpoint
     | "routePath"
     | "componentName"
     | "topic"
+    | "group"
     | "operation"
     | "brokerType"
     | "keyPattern"
@@ -171,6 +173,7 @@ export function toGraphDelta(input: {
 }): GraphDelta {
   const { graph, request, projectName, projectRoot } = input;
   const id = createIdMapper(projectName);
+  const scoped = Boolean(request.sourceFiles?.length);
   const units = graph.units.filter(isCoreUnit);
   const nodeIds = new Set<string>([
     ...graph.packages.map((pkg) => pkg.id),
@@ -194,7 +197,7 @@ export function toGraphDelta(input: {
     functions: graph.functions.map((fn) => cleanFunction(fn, projectName, id)),
     endpoints: graph.endpoints.map((endpoint) => cleanEndpoint(endpoint, projectName, id)),
     relationships: graph.relationships
-      .filter((relationship) => isCoreRelationship(relationship, nodeIds))
+      .filter((relationship) => isCoreRelationship(relationship, nodeIds, scoped))
       .map((relationship) => cleanRelationship(relationship, projectName, id)),
     deletedNodeIds: [],
     deletedRelationshipIds: [],
@@ -206,12 +209,17 @@ function isCoreUnit(unit: CodeUnit): boolean {
   return unit.nodeKind === "module" && unit.subKind === "source_file";
 }
 
-function isCoreRelationship(relationship: CodeRelationship, nodeIds: Set<string>): boolean {
+function isCoreRelationship(relationship: CodeRelationship, nodeIds: Set<string>, scoped = false): boolean {
   if (!CORE_RELATIONSHIP_TYPES.has(relationship.relationshipType)) {
     return false;
   }
-  return isKnownOrUnresolved(relationship.fromNodeId, nodeIds)
-    && isKnownOrUnresolved(relationship.toNodeId, nodeIds);
+  if (!isKnownOrUnresolved(relationship.fromNodeId, nodeIds)) {
+    return false;
+  }
+  // An edge is owned by its fromNode. In scoped emit the toNode may reference a node
+  // outside the extracted subgraph (a cross-file call/render target); keep the edge so
+  // the engine can resolve it / create a placeholder. Full emit keeps the stricter check.
+  return scoped || isKnownOrUnresolved(relationship.toNodeId, nodeIds);
 }
 
 function isKnownOrUnresolved(nodeId: string, nodeIds: Set<string>): boolean {
@@ -305,6 +313,8 @@ function cleanEndpoint(endpoint: CodeEndpoint, projectName: string, id: IdMapper
     routePath: endpoint.routePath,
     componentName: endpoint.componentName,
     topic: endpoint.topic,
+    // MQ consumer group metadata (aligned with Java MqEndpoint.group; not MATCHES identity).
+    group: endpoint.group,
     operation: endpoint.operation,
     brokerType: endpoint.brokerType,
     keyPattern: endpoint.keyPattern,
