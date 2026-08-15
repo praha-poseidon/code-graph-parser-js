@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runStaticExtractTs, type StaticExtractFact } from "@static-extract/extractor-ts";
@@ -16,19 +16,36 @@ interface AddEndpointOptions {
   options: ParserOptions;
 }
 
+interface ExtractWorkspace {
+  /** Fully materialised SER rule file paths (presets + user rules + merged trace). */
+  ruleFiles: string[];
+  /** Object form preferred; path string accepted by static-extract-js. */
+  externalValues: Record<string, unknown> | string | undefined;
+  dispose(): Promise<void>;
+}
+
+/**
+ * static-extract-js (aligned with Java extract) only accepts:
+ * - SER rule files / ruleSources text with optional embedded `trace { ... }`
+ * - externalValues / dictionary / externalValuesFile
+ *
+ * There is no top-level `traceRule` or `builtin` API. Standalone legacy
+ * `trace "name" ...` documents (parser options / CLI) are converted to
+ * embedded `trace { ... }` and merged into each rule before extract.
+ */
 export class StaticExtractEndpointProvider {
   async addEndpoints(graph: GraphBuilder, input: AddEndpointOptions): Promise<void> {
     if (!this.shouldRun(input.options)) return;
 
     const workspace = await this.prepareWorkspace(input.options);
     try {
+      // Identity dict is applied only inside static-extract-js.
       const report = await runStaticExtractTs({
         project: input.projectRoot,
+        projectName: input.projectName,
         source: input.sourceFiles.map((file) => file.getFilePath()),
-        rule: [...workspace.presetRuleFiles, ...(input.options.ruleSources ?? []), ...workspace.ruleFiles],
-        traceRule: [...(input.options.traceRuleSources ?? []), ...workspace.traceRuleFiles],
-        externalValues: workspace.externalValuesFile,
-        builtin: input.options.staticExtractBuiltinRules
+        rule: workspace.ruleFiles,
+        externalValues: workspace.externalValues as never
       });
 
       for (const fact of report.results) {
@@ -52,54 +69,96 @@ export class StaticExtractEndpointProvider {
       options.ruleSources?.length ||
       options.ruleTexts?.length ||
       options.traceRuleSources?.length ||
-      options.traceRuleTexts?.length
+      options.traceRuleTexts?.length ||
+      options.externalValues ||
+      options.externalValuesFile
     );
   }
 
-  private async prepareWorkspace(options: ParserOptions): Promise<{
-    ruleFiles: string[];
-    traceRuleFiles: string[];
-    presetRuleFiles: string[];
-    externalValuesFile: string | undefined;
-    dispose(): Promise<void>;
-  }> {
-    const directory = needsTempWorkspace(options)
-      ? await mkdtemp(path.join(os.tmpdir(), "code-graph-static-extract-"))
-      : undefined;
-    const presetRules = resolveStaticExtractPresetRules(options.staticExtractPresetRules);
-    const presetRuleFiles = directory ? await writeRuleTexts(directory, "preset-rule", presetRules) : [];
-    const ruleFiles = directory ? await writeRuleTexts(directory, "rule", options.ruleTexts ?? []) : [];
-    const traceRuleFiles = directory ? await writeRuleTexts(directory, "trace", options.traceRuleTexts ?? []) : [];
-    const externalValuesFile = await resolveExternalValuesFile(options, directory);
+  private async prepareWorkspace(options: ParserOptions): Promise<ExtractWorkspace> {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "code-graph-static-extract-"));
+    try {
+      // Java extract has no builtins; parser-js "builtin" enables local SER presets.
+      const presetFlag =
+        options.staticExtractPresetRules !== undefined
+          ? options.staticExtractPresetRules
+          : options.staticExtractBuiltinRules
+            ? true
+            : undefined;
+      const presetRules = resolveStaticExtractPresetRules(presetFlag);
 
-    return {
-      ruleFiles,
-      traceRuleFiles,
-      presetRuleFiles,
-      externalValuesFile,
-      async dispose(): Promise<void> {
-        if (directory) await rm(directory, { recursive: true, force: true });
+      const ruleBodies: string[] = [...presetRules, ...(options.ruleTexts ?? [])];
+      for (const source of options.ruleSources ?? []) {
+        ruleBodies.push(await readFile(source, "utf8"));
       }
-    };
+
+      // Standalone trace docs (legacy CLI/options) → embedded entries; full `rule ` docs → rules.
+      const embeddedTraceEntries: string[] = [];
+      for (const source of options.traceRuleSources ?? []) {
+        const text = await readFile(source, "utf8");
+        if (containsRuleDecl(text)) {
+          ruleBodies.push(text);
+        } else {
+          const entry = standaloneTraceToEmbeddedEntries(text);
+          if (entry) embeddedTraceEntries.push(entry);
+        }
+      }
+      for (const text of options.traceRuleTexts ?? []) {
+        if (containsRuleDecl(text)) {
+          ruleBodies.push(text);
+        } else {
+          const entry = standaloneTraceToEmbeddedEntries(text);
+          if (entry) embeddedTraceEntries.push(entry);
+        }
+      }
+
+      if (ruleBodies.length === 0) {
+        throw new Error(
+          "static-extract requires at least one SER rule (ruleSources/ruleTexts/presets). " +
+            "Standalone trace-only input is not valid SER (use embedded trace { } in the rule file)."
+        );
+      }
+
+      const merged = ruleBodies.map((body) => mergeEmbeddedTrace(body, embeddedTraceEntries));
+      const ruleFiles = await writeRuleTexts(directory, "rule", merged);
+      const externalValues = await resolveExternalValues(options, directory);
+
+      return {
+        ruleFiles,
+        externalValues,
+        async dispose(): Promise<void> {
+          await rm(directory, { recursive: true, force: true });
+        }
+      };
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   private addHttpEndpointFact(graph: GraphBuilder, input: AddEndpointOptions, fact: StaticExtractFact): void {
-    const pathValue = fact.fields.path ?? fact.fields.url ?? fact.fields.route;
-    if (!pathValue) return;
     if (isUnsafeFileRouteFact(fact)) return;
-    // Drop non-path noise from bare get/post matches (Map.get(id), get(key), …)
-    // and unresolved identifiers that never look like an HTTP path.
-    if (!looksLikeHttpPath(pathValue)) return;
+
+    const direction = normalizeDirection(fact);
+    // Identity already resolved by static-extract (flat identity dict).
+    const pathValue = fact.fields.path ?? fact.fields.url ?? fact.fields.route;
+    const parseLevel = resolveParseLevel(fact.fields);
+
+    if (!pathValue) return;
+    // Drop non-path noise from bare get/post matches (Map.get(id), get(key), …).
+    // After extract dict HIT, path is always a real path; still filter unresolved SER junk.
+    if (!looksLikeHttpPath(pathValue) && parseLevel !== "config") return;
 
     const method = normalizeHttpMethod(fact.fields.method, fact.fields.client);
     if (!isKnownHttpMethod(method)) return;
-    const normalizedPath = normalizeHttpPath(pathValue);
+    // Do not re-normalize identity already fixed by dict (same as Java mapper).
+    const normalizedPath =
+      parseLevel === "config" ? pathValue : normalizeHttpPath(pathValue);
     const matchIdentity = `HTTP:${method}:${normalizedPath}`;
     const projectFilePath = fact.projectFilePath;
     const language = languageOf(projectFilePath);
     const line = fact.startLine;
     const id = endpointId(input.projectName, projectFilePath, matchIdentity, line);
-    const direction = normalizeDirection(fact);
     const handlerReference = firstNonBlank(fact.fields.handler, fact.enclosingSymbol);
     if (direction === "inbound" && !handlerReference) return;
     const linkedFunction = direction === "inbound"
@@ -121,7 +180,7 @@ export class StaticExtractEndpointProvider {
       endpointType: "HTTP",
       direction,
       isExternal: direction === "outbound",
-      parseLevel: "full",
+      parseLevel,
       matchIdentity,
       httpMethod: method,
       path: pathValue,
@@ -132,7 +191,8 @@ export class StaticExtractEndpointProvider {
         factType: fact.factType,
         fields: fact.fields,
         client: fact.fields.client,
-        enclosingSymbol: fact.enclosingSymbol
+        enclosingSymbol: fact.enclosingSymbol,
+        ...(fact.fields.pathKey ? { pathKey: fact.fields.pathKey } : {})
       }
     });
 
@@ -152,8 +212,10 @@ export class StaticExtractEndpointProvider {
   }
 
   private addUiActionFact(graph: GraphBuilder, input: AddEndpointOptions, fact: StaticExtractFact): void {
+    // Identity from static-extract fields only (no parser-side dict).
     const text = fact.fields.text ?? fact.fields.label ?? fact.fields.name;
     if (!text) return;
+    const parseLevel = resolveParseLevel(fact.fields);
 
     const event = normalizeUiEvent(fact.fields.event);
     const element = fact.fields.kind ?? fact.fields.element ?? fact.fields.component ?? "unknown";
@@ -180,7 +242,7 @@ export class StaticExtractEndpointProvider {
       endpointType: "UI",
       direction: "inbound",
       isExternal: false,
-      parseLevel: "full",
+      parseLevel,
       matchIdentity,
       path: `${projectFilePath}#${element}:${text}`,
       normalizedPath: `${element}:${text}`,
@@ -194,7 +256,8 @@ export class StaticExtractEndpointProvider {
         factType: fact.factType,
         fields: fact.fields,
         handler: fact.fields.handler,
-        enclosingSymbol: fact.enclosingSymbol
+        enclosingSymbol: fact.enclosingSymbol,
+        ...(fact.fields.pathKey ? { pathKey: fact.fields.pathKey } : {})
       }
     });
 
@@ -217,8 +280,10 @@ export class StaticExtractEndpointProvider {
     const endpointType = normalizeEndpointType(fact.fields.endpointType ?? fact.fields.type);
     if (endpointType === "HTTP" || endpointType === "UI" || endpointType === "UNKNOWN") return;
 
+    // Identity from static-extract only (flat identity dict applied there).
     const identityValue = genericIdentityValue(endpointType, fact.fields);
     if (!identityValue) return;
+    const parseLevel = resolveParseLevel(fact.fields);
 
     const direction = normalizeDirection(fact);
     const matchIdentity = fact.fields.matchIdentity ?? `${endpointType}:${identityValue}`;
@@ -249,17 +314,19 @@ export class StaticExtractEndpointProvider {
       isExternal: direction === "outbound",
       serviceName: fact.fields.serviceName,
       targetService: fact.fields.targetService,
-      parseLevel: "full",
+      parseLevel,
       matchIdentity,
       path: identityValue,
       normalizedPath: identityValue,
-      topic: fact.fields.topic,
+      topic: endpointType === "MQ" ? identityValue : fact.fields.topic,
+      // MQ consumer group is metadata only (not MATCHES identity) — same as Java MqEndpoint.group.
+      group: fact.fields.group,
       operation: fact.fields.operation,
       brokerType: fact.fields.brokerType,
-      keyPattern: fact.fields.keyPattern ?? fact.fields.key,
-      command: fact.fields.command,
+      keyPattern: endpointType === "REDIS" ? identityValue : (fact.fields.keyPattern ?? fact.fields.key),
+      command: normalizeCommand(fact.fields.command),
       dataStructure: fact.fields.dataStructure,
-      tableName: fact.fields.tableName ?? fact.fields.table,
+      tableName: endpointType === "DB" ? identityValue : (fact.fields.tableName ?? fact.fields.table),
       dbOperation: fact.fields.dbOperation ?? fact.fields.operation,
       attributes: {
         source: "static-extract",
@@ -267,7 +334,8 @@ export class StaticExtractEndpointProvider {
         factType: fact.factType,
         fields: fact.fields,
         handler: fact.fields.handler,
-        enclosingSymbol: fact.enclosingSymbol
+        enclosingSymbol: fact.enclosingSymbol,
+        ...(fact.fields.pathKey ? { pathKey: fact.fields.pathKey } : {})
       }
     } satisfies CodeEndpoint);
 
@@ -287,10 +355,6 @@ export class StaticExtractEndpointProvider {
   }
 }
 
-function needsTempWorkspace(options: ParserOptions): boolean {
-  return Boolean(options.staticExtractPresetRules || options.ruleTexts?.length || options.traceRuleTexts?.length || options.externalValues);
-}
-
 function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.trim().length > 0);
 }
@@ -305,20 +369,91 @@ async function writeRuleTexts(directory: string, prefix: string, texts: string[]
   return files;
 }
 
-async function resolveExternalValuesFile(options: ParserOptions, directory: string | undefined): Promise<string | undefined> {
+/**
+ * Prefer in-memory object (matches static-extract-js externalValues API).
+ * Fall back to externalValuesFile path when only a file was provided.
+ */
+async function resolveExternalValues(
+  options: ParserOptions,
+  directory: string
+): Promise<Record<string, unknown> | string | undefined> {
+  if (options.externalValues) return options.externalValues;
   if (options.externalValuesFile) return options.externalValuesFile;
-  if (!options.externalValues) return undefined;
-
-  if (!directory) {
-    throw new Error("Internal error: external values require a temporary static-extract workspace");
-  }
-  const file = path.join(directory, "external-values.json");
-  await writeFile(file, `${JSON.stringify(options.externalValues, null, 2)}\n`, "utf8");
-  return file;
+  void directory;
+  return undefined;
 }
 
 function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+/** Same semantics as Java mapper: blank/missing → "full"; otherwise pass through known levels. */
+function resolveParseLevel(fields: Record<string, string>): NonNullable<CodeEndpoint["parseLevel"]> {
+  const raw = (fields.parseLevel ?? "").trim().toLowerCase();
+  if (
+    raw === "config" ||
+    raw === "partial" ||
+    raw === "unknown" ||
+    raw === "unresolved" ||
+    raw === "full"
+  ) {
+    return raw;
+  }
+  return "full";
+}
+
+function containsRuleDecl(text: string): boolean {
+  return /^\s*rule\s+/m.test(text) || /\brule\s+"/.test(text);
+}
+
+/**
+ * Convert legacy standalone trace documents into the inner entries of
+ * embedded `trace { ... }` (static-extract-js / SER grammar).
+ *
+ * Accepted forms:
+ * - already-embedded: `trace { from call ... }`
+ * - old named: `trace "Name"\nfrom call ...`
+ * - bare entries: `from call ...`
+ */
+function standaloneTraceToEmbeddedEntries(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+
+  const embeddedBlock = trimmed.match(/^trace\s*\{([\s\S]*)\}\s*$/i);
+  if (embeddedBlock) {
+    const body = embeddedBlock[1].trim();
+    return body || undefined;
+  }
+
+  // Strip optional `trace "name"` / `trace 'name'` header (legacy standalone file).
+  const withoutHeader = trimmed.replace(/^trace\s+(?:"[^"]*"|'[^']*')\s*/i, "").trim();
+  if (!withoutHeader) return undefined;
+  // If still starts with `trace {` after partial strip, unwrap.
+  const nested = withoutHeader.match(/^trace\s*\{([\s\S]*)\}\s*$/i);
+  if (nested) {
+    const body = nested[1].trim();
+    return body || undefined;
+  }
+  return withoutHeader;
+}
+
+/** Append standalone trace entries into a rule that does not already embed trace { }. */
+function mergeEmbeddedTrace(ruleText: string, entries: string[]): string {
+  if (entries.length === 0) return ruleText;
+  const body = ruleText.trimEnd();
+  if (/\btrace\s*\{/.test(body)) {
+    // Rule already has embedded trace — inject extra entries before the closing brace of the last trace block.
+    const lastTrace = body.lastIndexOf("trace");
+    const open = body.indexOf("{", lastTrace);
+    const close = body.lastIndexOf("}");
+    if (open >= 0 && close > open) {
+      const before = body.slice(0, close).trimEnd();
+      const after = body.slice(close);
+      return ensureTrailingNewline(`${before}\n\n${entries.join("\n\n")}\n${after}`);
+    }
+    return ensureTrailingNewline(body);
+  }
+  return ensureTrailingNewline(`${body}\n\ntrace {\n${entries.join("\n\n")}\n}`);
 }
 
 function findEnclosingFunction(functions: CodeFunction[], projectFilePath: string, line: number): CodeFunction | undefined {
@@ -397,9 +532,18 @@ function normalizeUiEvent(event: string | undefined): string {
 function normalizeHttpMethod(method: string | undefined, client: string | undefined): string {
   const value = (method ?? "").toUpperCase();
   if (!value || value === "FETCH" || value === "AXIOS") return "GET";
+  // SER map miss→empty: do not use partial map { DEL: DELETE } in rules; normalize here.
   if (value === "DEL") return "DELETE";
   if (["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(value)) return value;
   return client?.toLowerCase() === "fetch" ? "GET" : value;
+}
+
+/** Normalize Redis/command-style aliases after SER upper (no partial map in SER). */
+function normalizeCommand(command: string | undefined): string | undefined {
+  if (!command) return command;
+  const value = command.toUpperCase();
+  if (value === "DEL") return "DELETE";
+  return value;
 }
 
 const KNOWN_HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
