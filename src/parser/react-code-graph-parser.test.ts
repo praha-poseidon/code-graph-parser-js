@@ -501,9 +501,15 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
       include: ["src/**/*"]
     }),
     "src/mq.ts": [
-      "const kafka = { send(topic: string, payload: unknown) { return topic; } };",
+      "const kafka = {",
+      "  send(topic: string, payload: unknown) { return topic; },",
+      "  subscribe(topic: string, group: string) { return topic; }",
+      "};",
       "export function publishOrder(order: unknown) {",
       "  return kafka.send('orders.created', order);",
+      "}",
+      "export function consumeOrder() {",
+      "  return kafka.subscribe('orders.created', 'order-consumer-group');",
       "}"
     ].join("\n")
   });
@@ -528,11 +534,33 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
       "  operation: \"PRODUCE\"",
       "  topic: topic",
       "}"
+    ].join("\n"), [
+      "rule \"Kafka Subscribe\"",
+      "fact mq_endpoint",
+      "",
+      "find call subscribe",
+      "when call owner kafka",
+      "",
+      "let topic =",
+      "  from argument[0] take value",
+      "",
+      "let group =",
+      "  from argument[1] take value",
+      "",
+      "build {",
+      "  endpointType: \"MQ\"",
+      "  direction: \"inbound\"",
+      "  brokerType: \"KAFKA\"",
+      "  operation: \"CONSUME\"",
+      "  topic: topic",
+      "  group: group",
+      "  handler: \"consumeOrder\"",
+      "}"
     ].join("\n")],
 
   });
 
-  const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "MQ:orders.created");
+  const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "MQ:orders.created" && item.direction === "outbound");
   assert.ok(endpoint);
   assert.equal(endpoint.endpointType, "MQ");
   assert.equal(endpoint.topic, "orders.created");
@@ -546,17 +574,30 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
     endpoint.id
   );
 
+  const consumer = result.graph.endpoints.find(
+    (item) => item.matchIdentity === "MQ:orders.created" && item.direction === "inbound"
+  );
+  assert.ok(consumer, "MQ consumer endpoint expected");
+  assert.equal(consumer.group, "order-consumer-group");
+  assert.equal(consumer.topic, "orders.created");
+  assert.equal(consumer.operation, "CONSUME");
+
   const delta = toGraphDelta({
     graph: result.graph,
     request: { projectRoot: root, language: "typescript" },
     projectName: "static-extract-mq-app",
     projectRoot: root
   });
-  const deltaEndpoint = delta.endpoints.find((item) => item.matchIdentity === "MQ:orders.created");
+  const deltaEndpoint = delta.endpoints.find((item) => item.matchIdentity === "MQ:orders.created" && item.direction === "outbound");
   assert.ok(deltaEndpoint);
   assert.equal(deltaEndpoint.endpointKind, "mq");
   assert.equal(deltaEndpoint.topic, "orders.created");
   assert.equal(deltaEndpoint.brokerType, "KAFKA");
+  const deltaConsumer = delta.endpoints.find(
+    (item) => item.matchIdentity === "MQ:orders.created" && item.direction === "inbound"
+  );
+  assert.ok(deltaConsumer, "process-protocol must emit MQ consumer");
+  assert.equal(deltaConsumer.group, "order-consumer-group", "process-protocol must pass MQ group");
 });
 
 test("can disable parser endpoint inference and use SER facts instead", async () => {
@@ -592,8 +633,9 @@ test("can disable parser endpoint inference and use SER facts instead", async ()
       "",
       "find decorator Action",
       "",
+      // static-extract-js / Java SER: `from decorator Name on class`
       "let basePath =",
-      "  from decorator on class Area take value",
+      "  from decorator Area on class take value",
       "",
       "let methodPath =",
       "  from decorator take value",
@@ -1972,6 +2014,89 @@ function assertGraphHasUnit(result: Awaited<ReturnType<ReactCodeGraphParser["par
 function assertGraphHasFunction(result: Awaited<ReturnType<ReactCodeGraphParser["parse"]>>, id: string): void {
   assert.ok(result.graph.functions.some((fn) => fn.id === id), `Expected function ${id}`);
 }
+
+test("path dict overrides any direction; MISS keeps SER path", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-code-graph-dict-"));
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "dict-app" }), "utf8");
+  fs.writeFileSync(
+    path.join(root, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { jsx: "react-jsx", moduleResolution: "bundler", baseUrl: "." },
+      include: ["src/**/*"]
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(root, "src/client.ts"),
+    [
+      "function buildUsersUrl() { return '/should-not-appear'; }",
+      "export function listUsers() { return fetch(buildUsersUrl()); }",
+      "export function listFixed() { return fetch('/api/fixed'); }"
+    ].join("\n"),
+    "utf8"
+  );
+
+  // identity key: module.path.symbol() — no project prefix, flat string value
+  const key = "src.client.listUsers()";
+  const parser = new ReactCodeGraphParser();
+  const result = await parser.parse({
+    projectRoot: root,
+    projectName: "dict-app",
+    staticExtractPresetRules: ["http-client"],
+    externalValues: {
+      [key]: "v1/users-from-dict"
+    }
+  });
+
+  const fromDict = result.graph.endpoints.find((e) => e.path === "/v1/users-from-dict");
+  assert.ok(fromDict, "dict HIT should set path");
+  assert.equal(fromDict?.parseLevel, "config");
+  assert.equal(fromDict?.direction, "outbound");
+  assert.ok(!result.graph.endpoints.some((e) => (e.path ?? "").includes("buildUsersUrl")));
+
+  const fixed = result.graph.endpoints.find((e) => e.path === "/api/fixed");
+  assert.ok(fixed, "MISS keeps SER literal path");
+});
+
+test("inbound path dict HIT overrides SER route path", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-code-graph-inbound-dict-"));
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "inbound-dict-app" }), "utf8");
+  fs.writeFileSync(
+    path.join(root, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { jsx: "react-jsx", moduleResolution: "bundler", baseUrl: "." },
+      include: ["src/**/*"]
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(root, "src/routes.ts"),
+    [
+      "export function listUsers() { return null; }",
+      "router.get('/legacy-users', listUsers);"
+    ].join("\n"),
+    "utf8"
+  );
+
+  const parser = new ReactCodeGraphParser();
+  // module.path.symbol() — no project prefix
+  const result = await parser.parse({
+    projectRoot: root,
+    projectName: "inbound-dict-app",
+    staticExtractPresetRules: ["router"],
+    externalValues: {
+      "src.routes.listUsers()": "/v1/users-inbound-dict"
+    }
+  });
+
+  const hit = result.graph.endpoints.find((e) => e.path === "/v1/users-inbound-dict");
+  assert.ok(
+    hit && hit.parseLevel === "config" && hit.direction === "inbound",
+    `inbound dict HIT expected, endpoints=${JSON.stringify(result.graph.endpoints.map((e) => ({ path: e.path, parseLevel: e.parseLevel, dir: e.direction, pathKey: e.attributes?.pathKey })))}`
+  );
+});
 
 function assertGraphHasRelationship(
   result: Awaited<ReturnType<ReactCodeGraphParser["parse"]>>,
