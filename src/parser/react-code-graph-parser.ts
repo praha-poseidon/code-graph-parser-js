@@ -10,7 +10,7 @@ import {
   type SourceFile
 } from "ts-morph";
 import { GraphBuilder } from "../graph/graph-builder.js";
-import type { CodeFunction, CodeUnit, NodeLanguage } from "../model/code-graph.js";
+import type { CodeFunction, CodeGraph, CodeUnit, NodeLanguage } from "../model/code-graph.js";
 import type { ParserOptions, ParseResult } from "../model/parser-options.js";
 import { loadTypeScriptProject, resolveProjectName } from "../project/project-loader.js";
 import { StaticExtractEndpointProvider } from "../static-extract/static-extract-endpoint-provider.js";
@@ -50,35 +50,21 @@ export class ReactCodeGraphParser {
   async parse(options: ParserOptions): Promise<ParseResult> {
     const projectRoot = path.resolve(options.projectRoot);
     const projectName = resolveProjectName(projectRoot, options.projectName);
-    const project = await loadTypeScriptProject({ ...options, projectRoot });
+    const resolvedOptions: ParserOptions = { ...options, projectRoot };
+    const project = await loadTypeScriptProject(resolvedOptions);
+    // Full project is always loaded (cross-file resolution needs it), but extraction is
+    // scoped to options.sourceFiles when provided. GraphBuilder then accumulates only those
+    // files' subgraph; cross-file edge targets become placeholder functions.
+    const requestedFiles = options.sourceFiles && options.sourceFiles.length > 0
+      ? new Set(options.sourceFiles.map((file) => path.resolve(file)))
+      : undefined;
     const sourceFiles = project
       .getSourceFiles()
       .filter((file) => isProjectSourceFile(file.getFilePath(), projectRoot))
-      .filter((file) => isSupportedSourceFile(file.getFilePath()));
+      .filter((file) => isSupportedSourceFile(file.getFilePath()))
+      .filter((file) => !requestedFiles || requestedFiles.has(path.resolve(file.getFilePath())));
 
-    const importIndex = new ImportIndex(projectRoot);
-    importIndex.index(sourceFiles);
-
-    const context: ParseContext = {
-      projectName,
-      projectRoot,
-      graph: new GraphBuilder(),
-      importIndex,
-      options: { ...options, projectRoot }
-    };
-
-    // Directory packages are created on demand per file path (no project-root package).
-    for (const sourceFile of sourceFiles) {
-      this.parseSourceFile(sourceFile, context);
-    }
-    await new StaticExtractEndpointProvider().addEndpoints(context.graph, {
-      projectName,
-      projectRoot,
-      sourceFiles,
-      options: context.options
-    });
-
-    const graph = context.graph.graph;
+    const graph = await this.extract(sourceFiles, projectName, projectRoot, resolvedOptions);
     return {
       graph,
       stats: {
@@ -90,6 +76,43 @@ export class ReactCodeGraphParser {
         relationships: graph.relationships.length
       }
     };
+  }
+
+  /**
+   * Extract a subgraph for the given source files against an already-loaded ts-morph project.
+   * The project (reachable from each SourceFile) provides cross-file resolution; only these
+   * files' owned nodes/edges are produced. Used by parse(), and by callers that load once and
+   * extract many filesets (e.g. batched incremental, or incremental-vs-full verification).
+   */
+  async extract(
+    sourceFiles: SourceFile[],
+    projectName: string,
+    projectRoot: string,
+    options: ParserOptions
+  ): Promise<CodeGraph> {
+    const importIndex = new ImportIndex(projectRoot);
+    importIndex.index(sourceFiles);
+
+    const context: ParseContext = {
+      projectName,
+      projectRoot,
+      graph: new GraphBuilder(),
+      importIndex,
+      options
+    };
+
+    // Directory packages are created on demand per file path (no project-root package).
+    for (const sourceFile of sourceFiles) {
+      this.parseSourceFile(sourceFile, context);
+    }
+    await new StaticExtractEndpointProvider().addEndpoints(context.graph, {
+      projectName,
+      projectRoot,
+      sourceFiles,
+      options
+    });
+
+    return context.graph.graph;
   }
 
   /**
