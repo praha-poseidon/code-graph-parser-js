@@ -22,6 +22,7 @@ interface CliArgs {
   request?: string;
   stdio?: boolean;
   delta?: boolean;
+  noModuleClosure?: boolean;
 }
 
 async function main(): Promise<void> {
@@ -51,7 +52,8 @@ async function main(): Promise<void> {
     staticExtractBuiltinRules: args.staticExtractBuiltin,
     staticExtractPresetRules: args.staticExtractPreset,
     include: args.include,
-    exclude: args.exclude
+    exclude: args.exclude,
+    moduleClosure: args.noModuleClosure ? false : undefined
   });
 
   const payload = JSON.stringify(args.delta
@@ -124,6 +126,8 @@ function parseArgs(argv: string[]): CliArgs {
       output.stdio = true;
     } else if (arg === "--delta") {
       output.delta = true;
+    } else if (arg === "--no-module-closure") {
+      output.noModuleClosure = true;
     } else if (arg === "--rules" || arg === "--no-legacy-endpoint-inference") {
       // Removed legacy YAML rule engine flags; ignore for backward compatibility.
       if (arg === "--rules" && next && !next.startsWith("-")) index += 1;
@@ -163,6 +167,7 @@ async function runProcessProtocol(args: CliArgs): Promise<void> {
     include: arrayOption(request, "include") ?? args.include,
     exclude: arrayOption(request, "exclude") ?? args.exclude,
     sourceFiles: request.sourceFiles,
+    moduleClosure: booleanOption(request, "moduleClosure") ?? (args.noModuleClosure ? false : undefined),
     gitRepoUrl: request.gitRepoUrl,
     gitBranch: request.gitBranch
   });
@@ -261,7 +266,7 @@ function readStdin(): Promise<string> {
 function printUsage(): void {
   process.stderr.write(
       `Usage:\n` +
-      `  frontend-code-graph --project <path> [--include <glob>] [--exclude <glob>] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--out graph.json] [--delta]\n` +
+      `  frontend-code-graph --project <path> [--include <glob>] [--exclude <glob>] [--no-module-closure] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--out graph.json] [--delta]\n` +
       `  frontend-code-graph --stdio\n` +
       `  frontend-code-graph --request request.json [--out delta.json]\n`
   );

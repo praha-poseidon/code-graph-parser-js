@@ -12,7 +12,10 @@ import { resolveStaticExtractPresetRules } from "./static-extract-presets.js";
 interface AddEndpointOptions {
   projectName: string;
   projectRoot: string;
-  sourceFiles: Array<{ getFilePath(): string }>;
+  sourceFiles: Array<{
+    getFilePath(): string;
+  }>;
+  morphProject?: Parameters<typeof runStaticExtractTs>[0]["morphProject"];
   options: ParserOptions;
 }
 
@@ -44,6 +47,7 @@ export class StaticExtractEndpointProvider {
         project: input.projectRoot,
         projectName: input.projectName,
         source: input.sourceFiles.map((file) => file.getFilePath()),
+        morphProject: input.morphProject,
         rule: workspace.ruleFiles,
         externalValues: workspace.externalValues as never
       });

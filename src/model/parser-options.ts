@@ -30,10 +30,13 @@ export interface ParserOptions {
   exclude?: string[];
   /**
    * When set, only these project files (absolute paths) are extracted and emitted.
-   * The full project is still loaded for cross-file resolution, but graph building
-   * (and the emitted CodeGraph) is scoped to these files. Undefined/empty => all files.
+   * Their static import closure is loaded for cross-file resolution, but graph
+   * building (and the emitted CodeGraph) is scoped to these files.
+   * Undefined/empty => use the existing include scan.
    */
   sourceFiles?: string[];
+  /** Load the static import closure for sourceFiles. Default: true. */
+  moduleClosure?: boolean;
   gitRepoUrl?: string;
   gitBranch?: string;
 }

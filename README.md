@@ -53,6 +53,23 @@ When the Java app receives a `.ts` or `.tsx` file change, it infers `typescript`
 
 当 Java app 收到 `.ts` 或 `.tsx` 文件变更时，会推断语言为 `typescript`，把 `ParseRequest` 发给这个 CLI，拿到 `GraphDelta` 后通过已配置的存储适配器写入图谱。
 
+## Incremental LOAD vs SCAN
+
+When `ParseRequest.sourceFiles` is non-empty, those paths are the incremental
+SCAN set. The parser discovers `tsconfig.json` / `jsconfig.json`, builds their
+static import closure as LOAD, and puts both sets into one `ts-morph` Project:
+
+```text
+LOAD = import closure(sourceFiles)  # resolution only
+SCAN = sourceFiles                  # graph/fact emission
+```
+
+The graph parser and `static-extract-js` share that same Project. Dependency
+files can resolve symbols and values but do not emit units or endpoints for the
+current delta. With no `sourceFiles`, the existing `include` scan remains the
+SCAN set. `moduleClosure: false` / `--no-module-closure` is a debugging escape
+hatch that makes LOAD equal SCAN.
+
 ## Endpoint Rules
 
 Endpoint rules let users describe where frontend API paths are located without changing parser code.

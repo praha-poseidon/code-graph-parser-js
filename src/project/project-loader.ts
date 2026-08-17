@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import fg from "fast-glob";
-import { Project, ts } from "ts-morph";
+import { createModuleClosureProject } from "@static-extract/extractor-ts";
+import type { Project } from "ts-morph";
 import type { ParserOptions } from "../model/parser-options.js";
 
 const DEFAULT_INCLUDE = ["src/**/*.{js,jsx,ts,tsx,mjs,cjs}"];
@@ -21,26 +22,25 @@ const DEFAULT_EXCLUDE = [
   "**/*.min.js"
 ];
 
-export async function loadTypeScriptProject(options: ParserOptions): Promise<Project> {
-  const tsConfigPath = resolveTsConfig(options);
-  const project = tsConfigPath
-    ? new Project({ tsConfigFilePath: tsConfigPath, skipAddingFilesFromTsConfig: true })
-    : new Project({
-        compilerOptions: {
-          allowJs: true,
-          checkJs: false,
-          jsx: ts.JsxEmit.ReactJSX,
-          target: ts.ScriptTarget.ES2022,
-          module: ts.ModuleKind.ESNext,
-          moduleResolution: ts.ModuleResolutionKind.Bundler,
-          esModuleInterop: true,
-          skipLibCheck: true
-        }
-      });
+export interface LoadedTypeScriptProject {
+  project: Project;
+  loadPaths: string[];
+  scanPaths: string[];
+}
 
-  const files = await scanSourceFiles(options);
-  project.addSourceFilesAtPaths(files);
-  return project;
+export async function loadTypeScriptProject(options: ParserOptions): Promise<LoadedTypeScriptProject> {
+  const seeds = options.sourceFiles?.length
+    ? normalizeSeeds(options.projectRoot, options.sourceFiles)
+    : await scanSourceFiles(options);
+  const closure = createModuleClosureProject(options.projectRoot, seeds, {
+    moduleClosure: options.moduleClosure !== false,
+    configFilePath: options.tsConfigPath
+  });
+  return {
+    project: closure.project as unknown as Project,
+    loadPaths: closure.loadPaths,
+    scanPaths: closure.scanPaths
+  };
 }
 
 export async function scanSourceFiles(options: ParserOptions): Promise<string[]> {
@@ -70,10 +70,9 @@ export function resolveProjectName(projectRoot: string, explicitName?: string): 
   return path.basename(projectRoot);
 }
 
-function resolveTsConfig(options: ParserOptions): string | undefined {
-  if (options.tsConfigPath) {
-    return path.resolve(options.tsConfigPath);
-  }
-  const candidates = ["tsconfig.json", "jsconfig.json"].map((name) => path.join(options.projectRoot, name));
-  return candidates.find((candidate) => fs.existsSync(candidate));
+function normalizeSeeds(projectRoot: string, sourceFiles: string[]): string[] {
+  return [...new Set(sourceFiles
+    .map((filePath) => path.resolve(projectRoot, filePath))
+    .filter((filePath) => fs.existsSync(filePath)))]
+    .sort();
 }

@@ -7,6 +7,7 @@ import {
   type CallExpression,
   type ClassDeclaration,
   type Node as TsNode,
+  type Project,
   type SourceFile
 } from "ts-morph";
 import { GraphBuilder } from "../graph/graph-builder.js";
@@ -51,20 +52,18 @@ export class ReactCodeGraphParser {
     const projectRoot = path.resolve(options.projectRoot);
     const projectName = resolveProjectName(projectRoot, options.projectName);
     const resolvedOptions: ParserOptions = { ...options, projectRoot };
-    const project = await loadTypeScriptProject(resolvedOptions);
-    // Full project is always loaded (cross-file resolution needs it), but extraction is
-    // scoped to options.sourceFiles when provided. GraphBuilder then accumulates only those
-    // files' subgraph; cross-file edge targets become placeholder functions.
-    const requestedFiles = options.sourceFiles && options.sourceFiles.length > 0
-      ? new Set(options.sourceFiles.map((file) => path.resolve(file)))
-      : undefined;
+    const loaded = await loadTypeScriptProject(resolvedOptions);
+    const project = loaded.project;
+    // LOAD is the import closure in `project`; SCAN is exactly the requested seed set
+    // (or the legacy include scan when no seeds were supplied).
+    const scanPaths = new Set(loaded.scanPaths.map((file) => path.resolve(file)));
     const sourceFiles = project
       .getSourceFiles()
+      .filter((file) => scanPaths.has(path.resolve(file.getFilePath())))
       .filter((file) => isProjectSourceFile(file.getFilePath(), projectRoot))
-      .filter((file) => isSupportedSourceFile(file.getFilePath()))
-      .filter((file) => !requestedFiles || requestedFiles.has(path.resolve(file.getFilePath())));
+      .filter((file) => isSupportedSourceFile(file.getFilePath()));
 
-    const graph = await this.extract(sourceFiles, projectName, projectRoot, resolvedOptions);
+    const graph = await this.extract(sourceFiles, projectName, projectRoot, resolvedOptions, project);
     return {
       graph,
       stats: {
@@ -88,7 +87,8 @@ export class ReactCodeGraphParser {
     sourceFiles: SourceFile[],
     projectName: string,
     projectRoot: string,
-    options: ParserOptions
+    options: ParserOptions,
+    morphProject?: Project
   ): Promise<CodeGraph> {
     const importIndex = new ImportIndex(projectRoot);
     importIndex.index(sourceFiles);
@@ -109,6 +109,7 @@ export class ReactCodeGraphParser {
       projectName,
       projectRoot,
       sourceFiles,
+      morphProject: morphProject ?? sourceFiles[0]?.getProject(),
       options
     });
 

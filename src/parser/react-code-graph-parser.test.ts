@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { ReactCodeGraphParser } from "./react-code-graph-parser.js";
 import { toGraphDelta } from "../model/process-protocol.js";
+import { loadTypeScriptProject } from "../project/project-loader.js";
 
 test("parses React JSX graph and outbound endpoint", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-code-graph-"));
@@ -155,6 +156,73 @@ test("parses mixed JS TSX project into graph without graph storage", async () =>
       endpoint.attributes?.source === "static-extract"
     )
   );
+});
+
+test("incremental parse loads the import closure but scans only seeds", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "incremental-closure-app" }),
+    "src/dependency.js": [
+      'export const API = "/api/from-dependency";',
+      'export function target() { return fetch("/api/dependency-only"); }'
+    ].join("\n"),
+    "src/seed.js": [
+      'import { API, target } from "./dependency.js";',
+      "export function seed() { target(); return fetch(API); }"
+    ].join("\n"),
+    "src/unrelated.js": "export function unrelated() { return 1; }\n"
+  });
+  const seed = path.join(root, "src/seed.js");
+  const dependency = path.join(root, "src/dependency.js");
+
+  const loaded = await loadTypeScriptProject({ projectRoot: root, sourceFiles: [seed] });
+  assert.deepEqual(loaded.scanPaths, [seed]);
+  assert.ok(loaded.loadPaths.includes(dependency));
+  assert.ok(!loaded.loadPaths.includes(path.join(root, "src/unrelated.js")));
+
+  const withoutClosure = await loadTypeScriptProject({
+    projectRoot: root,
+    sourceFiles: [seed],
+    moduleClosure: false
+  });
+  assert.deepEqual(withoutClosure.loadPaths, [seed]);
+
+  const result = await new ReactCodeGraphParser().parse({
+    projectRoot: root,
+    sourceFiles: [seed],
+    staticExtractPresetRules: ["http-client"]
+  });
+  assert.deepEqual(result.graph.units.map((unit) => unit.projectFilePath), ["src/seed.js"]);
+  assert.ok(result.graph.relationships.some((relationship) =>
+    relationship.relationshipType === "CALLS"
+      && relationship.toNodeId.includes("src/dependency.js::target()")
+  ));
+  assert.deepEqual(
+    result.graph.endpoints.map((endpoint) => endpoint.matchIdentity),
+    ["HTTP:GET:/api/from-dependency"]
+  );
+});
+
+test("incremental parse discovers jsconfig path aliases", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "incremental-alias-app" }),
+    "jsconfig.json": JSON.stringify({
+      compilerOptions: { allowJs: true, baseUrl: ".", paths: { "@/*": ["src/*"] } }
+    }),
+    "src/config.js": 'export const API = "/api/alias-closure";\n',
+    "src/seed.js": 'import { API } from "@/config";\nexport function seed() { return fetch(API); }\n'
+  });
+  const seed = path.join(root, "src/seed.js");
+
+  const loaded = await loadTypeScriptProject({ projectRoot: root, sourceFiles: [seed] });
+  assert.ok(loaded.loadPaths.includes(path.join(root, "src/config.js")));
+
+  const result = await new ReactCodeGraphParser().parse({
+    projectRoot: root,
+    sourceFiles: [seed],
+    staticExtractPresetRules: ["http-client"]
+  });
+  assert.equal(result.graph.endpoints.length, 1);
+  assert.equal(result.graph.endpoints[0]?.matchIdentity, "HTTP:GET:/api/alias-closure");
 });
 
 test("converts parsed frontend graph to process GraphDelta protocol", async () => {
