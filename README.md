@@ -24,6 +24,12 @@ Optional endpoint rules:
 node dist/cli.js --project /path/to/react-app --rules ./endpoint-rules --out graph.json
 ```
 
+Endpoint SER is optional. With no SER rules or enabled presets, the parser still
+emits the base package, source-unit, function, and code-relationship graph; the
+endpoint list is simply empty. Supplying only an identity dictionary, an empty
+preset list, or standalone trace helpers does not make endpoint configuration
+mandatory and does not fail base graph parsing.
+
 Emit the Java engine `GraphDelta` protocol directly:
 
 直接输出 Java engine 使用的 `GraphDelta` 协议：
@@ -94,3 +100,20 @@ normalize:
 ```
 
 The default rules cover `fetch`, `axios.get(...)`, `axios({ url, method })`, and common `request.get(...)` wrappers.
+
+Endpoint facts may also build an opaque `other` string:
+
+```ser
+build {
+  endpointType: "HTTP"
+  direction: "inbound"
+  method: "GET"
+  path: path
+  handler: handler
+  other: "source=manual"
+}
+```
+
+`other` is copied unchanged to `CodeEndpoint` and the emitted `GraphDelta`
+endpoint. It is nullable, has no language-specific interpretation, and does not
+participate in endpoint IDs or `matchIdentity`.

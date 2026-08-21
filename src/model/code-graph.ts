@@ -88,6 +88,8 @@ export interface CodeEndpoint extends CodeNode {
   dataStructure?: string;
   tableName?: string;
   dbOperation?: string;
+  /** Opaque extra endpoint metadata emitted by SER `build { other: ... }`. */
+  other?: string | null;
 }
 
 export interface CodeRelationship {

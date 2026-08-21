@@ -601,6 +601,7 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
       "  brokerType: \"KAFKA\"",
       "  operation: \"PRODUCE\"",
       "  topic: topic",
+      "  other: \"schema=order-v2\"",
       "}"
     ].join("\n"), [
       "rule \"Kafka Subscribe\"",
@@ -634,6 +635,8 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
   assert.equal(endpoint.topic, "orders.created");
   assert.equal(endpoint.brokerType, "KAFKA");
   assert.equal(endpoint.operation, "PRODUCE");
+  assert.equal(endpoint.other, "schema=order-v2");
+  assert.equal(endpoint.matchIdentity, "MQ:orders.created", "other must not change endpoint identity");
   assert.equal(endpoint.attributes?.source, "static-extract");
   assertGraphHasRelationship(
     result,
@@ -661,6 +664,7 @@ test("maps non-http SER endpoint facts to graph endpoints", async () => {
   assert.equal(deltaEndpoint.endpointKind, "mq");
   assert.equal(deltaEndpoint.topic, "orders.created");
   assert.equal(deltaEndpoint.brokerType, "KAFKA");
+  assert.equal(deltaEndpoint.other, "schema=order-v2");
   const deltaConsumer = delta.endpoints.find(
     (item) => item.matchIdentity === "MQ:orders.created" && item.direction === "inbound"
   );
@@ -2164,6 +2168,83 @@ test("inbound path dict HIT overrides SER route path", async () => {
     hit && hit.parseLevel === "config" && hit.direction === "inbound",
     `inbound dict HIT expected, endpoints=${JSON.stringify(result.graph.endpoints.map((e) => ({ path: e.path, parseLevel: e.parseLevel, dir: e.direction, pathKey: e.attributes?.pathKey })))}`
   );
+});
+
+test("method-anchor dict creates inbound endpoints for object functions and preserves other", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "object-handler-app" }),
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { allowJs: true, moduleResolution: "bundler" },
+      include: ["src/**/*"]
+    }),
+    "src/handlers.ts": [
+      "export const handlers = {",
+      "  getDocMarkdown: async function() { return ''; },",
+      "  save: async () => null",
+      "};"
+    ].join("\n")
+  });
+  const rule = [
+    "rule \"Configured object handler\"",
+    "fact http_route",
+    "find method getDocMarkdown",
+    "let path =",
+    "  from method take value",
+    "let handler =",
+    "  from method take name",
+    "build {",
+    "  endpointType: \"HTTP\"",
+    "  direction: \"inbound\"",
+    "  method: \"GET\"",
+    "  path: path",
+    "  handler: handler",
+    "  other: \"source=manual\"",
+    "}",
+    "dict {",
+    "  src.handlers.handlers.getDocMarkdown() = /docs",
+    "  src.handlers.handlers.getDocMarkdown().1 = /admin/docs",
+    "}"
+  ].join("\n");
+
+  const result = await new ReactCodeGraphParser().parse({
+    projectRoot: root,
+    ruleTexts: [rule]
+  });
+  const handlerId = "object-handler-app#src/handlers.ts::handlers.getDocMarkdown()";
+  assertGraphHasFunction(result, handlerId);
+  assert.deepEqual(result.graph.endpoints.map((endpoint) => endpoint.path), ["/docs", "/admin/docs"]);
+  assert.ok(result.graph.endpoints.every((endpoint) => endpoint.other === "source=manual"));
+  assert.ok(result.graph.endpoints.every((endpoint) => endpoint.parseLevel === "config"));
+  assert.ok(result.graph.endpoints.every((endpoint) =>
+    result.graph.relationships.some((relationship) =>
+      relationship.relationshipType === "ENDPOINT_TO_FUNCTION" &&
+      relationship.fromNodeId === endpoint.id &&
+      relationship.toNodeId === handlerId
+    )
+  ));
+
+  const delta = toGraphDelta({
+    graph: result.graph,
+    request: { projectRoot: root },
+    projectName: "object-handler-app",
+    projectRoot: root
+  });
+  assert.ok(delta.endpoints.every((endpoint) => endpoint.other === "source=manual"));
+});
+
+test("dictionary or trace without endpoint SER does not block the base graph", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "no-ser-app" }),
+    "src/service.js": "export function run() { return 1; }\n"
+  });
+  const result = await new ReactCodeGraphParser().parse({
+    projectRoot: root,
+    externalValues: { "src.service.run()": "/unused" },
+    traceRuleTexts: ["from call helper\n  to parameter[0]"],
+    staticExtractPresetRules: []
+  });
+  assertGraphHasFunction(result, "no-ser-app#src/service.js::run()");
+  assert.equal(result.graph.endpoints.length, 0);
 });
 
 function assertGraphHasRelationship(

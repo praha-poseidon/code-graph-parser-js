@@ -156,6 +156,7 @@ export interface JavaCodeEndpoint
     | "dataStructure"
     | "tableName"
     | "dbOperation"
+    | "other"
   > {
   endpointKind: "http" | "mq" | "redis" | "db" | "ui";
 }
@@ -321,7 +322,8 @@ function cleanEndpoint(endpoint: CodeEndpoint, projectName: string, id: IdMapper
     command: endpoint.command,
     dataStructure: endpoint.dataStructure,
     tableName: endpoint.tableName,
-    dbOperation: endpoint.dbOperation
+    dbOperation: endpoint.dbOperation,
+    other: endpoint.other
   };
 }
 

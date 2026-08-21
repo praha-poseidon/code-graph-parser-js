@@ -42,6 +42,7 @@ export class StaticExtractEndpointProvider {
 
     const workspace = await this.prepareWorkspace(input.options);
     try {
+      if (workspace.ruleFiles.length === 0) return;
       // Identity dict is applied only inside static-extract-js.
       const report = await runStaticExtractTs({
         project: input.projectRoot,
@@ -67,15 +68,15 @@ export class StaticExtractEndpointProvider {
   }
 
   private shouldRun(options: ParserOptions): boolean {
+    const hasPresetRules = options.staticExtractPresetRules === true ||
+      (Array.isArray(options.staticExtractPresetRules) && options.staticExtractPresetRules.length > 0) ||
+      (options.staticExtractPresetRules === undefined && options.staticExtractBuiltinRules === true);
     return Boolean(
-      options.staticExtractBuiltinRules ||
-      options.staticExtractPresetRules ||
+      hasPresetRules ||
       options.ruleSources?.length ||
-      options.ruleTexts?.length ||
+      options.ruleTexts?.some((text) => text.trim().length > 0) ||
       options.traceRuleSources?.length ||
-      options.traceRuleTexts?.length ||
-      options.externalValues ||
-      options.externalValuesFile
+      options.traceRuleTexts?.length
     );
   }
 
@@ -117,10 +118,13 @@ export class StaticExtractEndpointProvider {
       }
 
       if (ruleBodies.length === 0) {
-        throw new Error(
-          "static-extract requires at least one SER rule (ruleSources/ruleTexts/presets). " +
-            "Standalone trace-only input is not valid SER (use embedded trace { } in the rule file)."
-        );
+        return {
+          ruleFiles: [],
+          externalValues: undefined,
+          async dispose(): Promise<void> {
+            await rm(directory, { recursive: true, force: true });
+          }
+        };
       }
 
       const merged = ruleBodies.map((body) => mergeEmbeddedTrace(body, embeddedTraceEntries));
@@ -163,7 +167,7 @@ export class StaticExtractEndpointProvider {
     const language = languageOf(projectFilePath);
     const line = fact.startLine;
     const id = endpointId(input.projectName, projectFilePath, matchIdentity, line);
-    const handlerReference = firstNonBlank(fact.fields.handler, fact.enclosingSymbol);
+    const handlerReference = resolveHandlerReference(fact);
     if (direction === "inbound" && !handlerReference) return;
     const linkedFunction = direction === "inbound"
       ? findHandlerFunction(graph.graph.functions, projectFilePath, handlerReference)
@@ -189,6 +193,7 @@ export class StaticExtractEndpointProvider {
       httpMethod: method,
       path: pathValue,
       normalizedPath,
+      other: fact.fields.other ?? null,
       attributes: {
         source: "static-extract",
         rule: fact.rule,
@@ -228,7 +233,7 @@ export class StaticExtractEndpointProvider {
     const language = languageOf(projectFilePath);
     const line = fact.startLine;
     const id = endpointId(input.projectName, projectFilePath, matchIdentity, line);
-    const handlerReference = firstNonBlank(fact.fields.handler, fact.enclosingSymbol);
+    const handlerReference = resolveHandlerReference(fact);
     const handler = findHandlerFunction(graph.graph.functions, projectFilePath, handlerReference);
 
     graph.addEndpoint({
@@ -254,6 +259,7 @@ export class StaticExtractEndpointProvider {
       uiElement: element,
       uiText: text,
       componentName: fact.fields.component,
+      other: fact.fields.other ?? null,
       attributes: {
         source: "static-extract",
         rule: fact.rule,
@@ -295,7 +301,7 @@ export class StaticExtractEndpointProvider {
     const language = languageOf(projectFilePath);
     const line = fact.startLine;
     const id = endpointId(input.projectName, projectFilePath, matchIdentity, line);
-    const handlerReference = firstNonBlank(fact.fields.handler, fact.enclosingSymbol);
+    const handlerReference = resolveHandlerReference(fact);
     if (direction === "inbound" && !handlerReference) return;
     const linkedFunction = direction === "inbound"
       ? findHandlerFunction(graph.graph.functions, projectFilePath, handlerReference)
@@ -332,6 +338,7 @@ export class StaticExtractEndpointProvider {
       dataStructure: fact.fields.dataStructure,
       tableName: endpointType === "DB" ? identityValue : (fact.fields.tableName ?? fact.fields.table),
       dbOperation: fact.fields.dbOperation ?? fact.fields.operation,
+      other: fact.fields.other ?? null,
       attributes: {
         source: "static-extract",
         rule: fact.rule,
@@ -361,6 +368,24 @@ export class StaticExtractEndpointProvider {
 
 function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+/**
+ * A method-anchor rule commonly builds the simple method name as `handler`,
+ * while the extractor also reports its owner-qualified enclosing symbol. Use
+ * that qualified symbol when both describe the same method; route-call rules
+ * still prefer their explicit, unrelated handler argument.
+ */
+function resolveHandlerReference(fact: StaticExtractFact): string | undefined {
+  const handler = firstNonBlank(fact.fields.handler);
+  const enclosing = firstNonBlank(fact.enclosingSymbol);
+  if (handler && enclosing) {
+    const normalizedHandler = handler.replace(/^this\./, "");
+    if (enclosing === normalizedHandler || enclosing.endsWith(`.${normalizedHandler}`)) {
+      return enclosing;
+    }
+  }
+  return handler ?? enclosing;
 }
 
 async function writeRuleTexts(directory: string, prefix: string, texts: string[]): Promise<string[]> {
