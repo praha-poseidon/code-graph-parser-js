@@ -1,12 +1,11 @@
 export type StaticExtractPresetName =
   | "http-client"
-  | "react-ui"
   | "router"
   | "next-file-route"
   | "decorator-route"
   | "integration";
 
-export const DEFAULT_STATIC_EXTRACT_PRESETS: StaticExtractPresetName[] = ["http-client", "react-ui"];
+export const DEFAULT_STATIC_EXTRACT_PRESETS: StaticExtractPresetName[] = ["http-client"];
 
 export function resolveStaticExtractPresetRules(input: boolean | string[] | undefined): string[] {
   if (!input) return [];
@@ -51,7 +50,7 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
       "build {",
       "  client: \"fetch\"",
       "  method: method | normalize upper",
-      "  path: path",
+      "  path: path | normalize httpPath",
       "}"
     ].join("\n"),
     [
@@ -70,7 +69,7 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
       "build {",
       "  client: \"axios\"",
       "  method: method | normalize upper",
-      "  path: path",
+      "  path: path | normalize httpPath",
       "}"
     ].join("\n"),
     httpClientMethodShortcutRule("axios"),
@@ -80,12 +79,6 @@ const PRESET_RULES: Record<StaticExtractPresetName, string[]> = {
     httpClientMethodShortcutRule("client"),
     httpClientMethodShortcutRule("http"),
     httpClientMethodShortcutRule("superagent")
-  ],
-  "react-ui": [
-    reactUiRule("button", "click", "onClick", "button", ["from children take text"], "button"),
-    reactUiRule("a", "click", "onClick", "a", ["from children take text", "from prop href take value"], "link"),
-    reactUiRule("input", "change", "onChange", "input", ["from prop name take value"], "input"),
-    reactUiRule("form", "submit", "onSubmit", "form", ["from prop name take value"], "form")
   ],
   router: [
     routerRule("router"),
@@ -266,30 +259,7 @@ function httpClientMethodShortcutRule(owner: string): string {
     "build {",
     `  client: "${owner}"`,
     "  method: method | normalize upper",
-    "  path: path",
-    "}"
-  ].join("\n");
-}
-
-function reactUiRule(tag: string, event: string, handlerProp: string, kind: string, textSources: string[], fallbackText: string): string {
-  return [
-    `rule "Preset React ${tag} ${event}"`,
-    "fact ui_action",
-    "",
-    `find jsx ${tag}`,
-    "",
-    "let text =",
-    ...textSources.map((source) => `  ${source}`),
-    `  fallback ${fallbackText}`,
-    "",
-    "let handler =",
-    `  from prop ${handlerProp} take reference`,
-    "",
-    "build {",
-    `  kind: "${kind}"`,
-    `  event: "${event}"`,
-    "  text: text",
-    "  handler: handler",
+    "  path: path | normalize httpPath",
     "}"
   ].join("\n");
 }

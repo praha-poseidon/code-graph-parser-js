@@ -321,7 +321,7 @@ test("adds outbound endpoints from static-extract facts with trace rules", async
       "",
       "build {",
       "  client: \"fetch\"",
-      "  path: path",
+      "  path: path | normalize httpPath",
       "}"
     ].join("\n"),
     "rules/config.trace.ser": [
@@ -399,7 +399,7 @@ test("adds inbound route endpoints from static-extract facts", async () => {
       "build {",
       "  method: \"GET\"",
       "  direction: \"inbound\"",
-      "  path: path",
+      "  path: path | normalize pathVariable",
       "  handler: handler",
       "}"
     ].join("\n")
@@ -423,7 +423,7 @@ test("adds inbound route endpoints from static-extract facts", async () => {
   );
 });
 
-test("adds custom UI action endpoints from static-extract facts", async () => {
+test("ignores UI action facts because UI is not an engine endpoint type", async () => {
   const root = createFixtureProject({
     "package.json": JSON.stringify({ name: "static-extract-ui-app" }),
     "tsconfig.json": JSON.stringify({
@@ -473,15 +473,11 @@ test("adds custom UI action endpoints from static-extract facts", async () => {
     ruleSources: [path.join(root, "rules/ui.ser")]
   });
 
-  const endpoint = result.graph.endpoints.find((item) => item.matchIdentity === "UI:PRESS:button:Press Save");
-  assert.ok(endpoint);
-  assert.equal(endpoint.attributes?.source, "static-extract");
-  assertGraphHasRelationship(
-    result,
-    "ENDPOINT_TO_FUNCTION",
-    endpoint.id,
-    "static-extract-ui-app#src/page.tsx::handlePress()"
-  );
+  assert.ok(!result.graph.endpoints.some((item) => item.endpointType === "UI"));
+  assert.ok(!result.graph.relationships.some((item) =>
+    item.relationshipType === "ENDPOINT_TO_FUNCTION" &&
+    item.toNodeId === "static-extract-ui-app#src/page.tsx::handlePress()"
+  ));
 });
 
 test("accepts in-memory SER and trace rules from parser options", async () => {
@@ -508,7 +504,9 @@ test("accepts in-memory SER and trace rules from parser options", async () => {
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    ruleTexts: [[
+    // ruleSources intentionally carries inline SER here. Other fixtures cover
+    // the file-path form so both wire-compatible representations stay tested.
+    ruleSources: [[
       "rule \"Inline Fetch\"",
       "fact frontend_api_call",
       "",
@@ -906,7 +904,7 @@ test.skip("SER preset rules extract common frontend endpoints without legacy inf
   const parser = new ReactCodeGraphParser();
   const result = await parser.parse({
     projectRoot: root,
-    staticExtractPresetRules: ["http-client", "react-ui", "router", "next-file-route", "decorator-route"],
+    staticExtractPresetRules: ["http-client", "router", "next-file-route", "decorator-route"],
 
   });
 
@@ -1102,6 +1100,11 @@ test("resolves TypeScript symbols for calls and type relationships", async () =>
       "  log() {}",
       "}"
     ].join("\n"),
+    "src/other.ts": [
+      "export interface ApiClient {",
+      "  save(): Promise<void>;",
+      "}"
+    ].join("\n"),
     "src/service.ts": [
       "import { ApiClient, BaseService } from './contracts';",
       "export class UserService extends BaseService implements ApiClient {",
@@ -1129,22 +1132,31 @@ test("resolves TypeScript symbols for calls and type relationships", async () =>
   const ids = {
     contractsUnit: "semantic-ts-app#src/contracts.ts",
     serviceUnit: "semantic-ts-app#src/service.ts",
+    apiClient: "semantic-ts-app#src/contracts.ts::ApiClient",
+    baseService: "semantic-ts-app#src/contracts.ts::BaseService",
+    userService: "semantic-ts-app#src/service.ts::UserService",
     handleSave: "semantic-ts-app#src/page.tsx::handleSave()",
     save: "semantic-ts-app#src/service.ts::UserService.save()",
-    interfaceSave: "semantic-ts-app#src/contracts.ts::ApiClient.save()"
+    interfaceSave: "semantic-ts-app#src/contracts.ts::ApiClient.save()",
+    wrongApiClient: "semantic-ts-app#src/other.ts::ApiClient"
   };
 
   assertGraphHasUnit(result, ids.contractsUnit);
   assertGraphHasUnit(result, ids.serviceUnit);
+  assertGraphHasUnit(result, ids.apiClient);
+  assertGraphHasUnit(result, ids.baseService);
+  assertGraphHasUnit(result, ids.userService);
   assertGraphHasFunction(result, ids.save);
   assertGraphHasFunction(result, ids.interfaceSave);
-  assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.serviceUnit, ids.save);
-  assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.contractsUnit, ids.interfaceSave);
+  assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.userService, ids.save);
+  assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.apiClient, ids.interfaceSave);
+  assertGraphHasRelationship(result, "EXTENDS", ids.userService, ids.baseService);
+  assertGraphHasRelationship(result, "IMPLEMENTS", ids.userService, ids.apiClient);
+  assertGraphLacksRelationship(result, "IMPLEMENTS", ids.userService, ids.wrongApiClient);
+  assertGraphHasRelationship(result, "OVERRIDES", ids.save, ids.interfaceSave);
   assertGraphHasRelationship(result, "CALLS", ids.handleSave, ids.save);
 
-  const uiEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Save");
-  assert.ok(uiEndpoint);
-  assertGraphHasRelationship(result, "ENDPOINT_TO_FUNCTION", uiEndpoint.id, ids.handleSave);
+  assert.ok(!result.graph.endpoints.some((endpoint) => endpoint.endpointType === "UI"));
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:POST:/api/users"));
 });
 
@@ -1547,12 +1559,7 @@ test("resolves tsconfig path aliases, hook wrapped handlers, class component han
   assertGraphHasRelationship(result, "CALLS", ids.hookHandler, ids.serviceSave);
   assertGraphHasRelationship(result, "CALLS", ids.legacyHandler, ids.serviceSave);
 
-  const hookEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Save Alias");
-  const legacyEndpoint = result.graph.endpoints.find((endpoint) => endpoint.matchIdentity === "UI:CLICK:button:Save Legacy");
-  assert.ok(hookEndpoint);
-  assert.ok(legacyEndpoint);
-  assertGraphHasRelationship(result, "ENDPOINT_TO_FUNCTION", hookEndpoint.id, ids.hookHandler);
-  assertGraphHasRelationship(result, "ENDPOINT_TO_FUNCTION", legacyEndpoint.id, ids.legacyHandler);
+  assert.ok(!result.graph.endpoints.some((endpoint) => endpoint.endpointType === "UI"));
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:POST:/api/alias-users"));
 });
 
@@ -2121,14 +2128,48 @@ test("path dict overrides any direction; MISS keeps SER path", async () => {
     }
   });
 
-  const fromDict = result.graph.endpoints.find((e) => e.path === "/v1/users-from-dict");
+  const fromDict = result.graph.endpoints.find((e) => e.path === "v1/users-from-dict");
   assert.ok(fromDict, "dict HIT should set path");
   assert.equal(fromDict?.parseLevel, "config");
   assert.equal(fromDict?.direction, "outbound");
+  assert.equal(fromDict?.normalizedPath, "v1/users-from-dict");
+  assert.equal(fromDict?.matchIdentity, "HTTP:GET:v1/users-from-dict");
   assert.ok(!result.graph.endpoints.some((e) => (e.path ?? "").includes("buildUsersUrl")));
 
   const fixed = result.graph.endpoints.find((e) => e.path === "/api/fixed");
   assert.ok(fixed, "MISS keeps SER literal path");
+});
+
+test("HTTP identity uses the exact SER path when no normalizer is declared", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "exact-ser-path-app" }),
+    "src/routes.js": [
+      "export function loadUser() { return null; }",
+      "router.get('/users/:userId?view=full', loadUser);"
+    ].join("\n")
+  });
+  const rule = [
+    "rule \"Exact route path\"",
+    "fact http_route",
+    "find call get",
+    "when call owner router",
+    "let path =",
+    "  from argument[0] take value",
+    "let handler =",
+    "  from handler take reference",
+    "build {",
+    "  method: \"GET\"",
+    "  direction: \"inbound\"",
+    "  path: path",
+    "  handler: handler",
+    "}"
+  ].join("\n");
+
+  const result = await new ReactCodeGraphParser().parse({ projectRoot: root, ruleTexts: [rule] });
+  assert.equal(result.graph.endpoints.length, 1);
+  assert.equal(result.graph.endpoints[0]?.path, "/users/:userId?view=full");
+  assert.equal(result.graph.endpoints[0]?.normalizedPath, "/users/:userId?view=full");
+  assert.equal(result.graph.endpoints[0]?.matchIdentity, "HTTP:GET:/users/:userId?view=full");
 });
 
 test("inbound path dict HIT overrides SER route path", async () => {
@@ -2201,8 +2242,8 @@ test("method-anchor dict creates inbound endpoints for object functions and pres
     "  other: \"source=manual\"",
     "}",
     "dict {",
-    "  src.handlers.handlers.getDocMarkdown() = /docs",
-    "  src.handlers.handlers.getDocMarkdown().1 = /admin/docs",
+    "  src.handlers.handlers.getDocMarkdown() = /docs/{docId}",
+    "  src.handlers.handlers.getDocMarkdown().1 = /admin/docs/{adminId}",
     "}"
   ].join("\n");
 
@@ -2212,7 +2253,11 @@ test("method-anchor dict creates inbound endpoints for object functions and pres
   });
   const handlerId = "object-handler-app#src/handlers.ts::handlers.getDocMarkdown()";
   assertGraphHasFunction(result, handlerId);
-  assert.deepEqual(result.graph.endpoints.map((endpoint) => endpoint.path), ["/docs", "/admin/docs"]);
+  assert.deepEqual(result.graph.endpoints.map((endpoint) => endpoint.path), ["/docs/{docId}", "/admin/docs/{adminId}"]);
+  assert.deepEqual(
+    result.graph.endpoints.map((endpoint) => endpoint.matchIdentity),
+    ["HTTP:GET:/docs/{docId}", "HTTP:GET:/admin/docs/{adminId}"]
+  );
   assert.ok(result.graph.endpoints.every((endpoint) => endpoint.other === "source=manual"));
   assert.ok(result.graph.endpoints.every((endpoint) => endpoint.parseLevel === "config"));
   assert.ok(result.graph.endpoints.every((endpoint) =>

@@ -6,7 +6,6 @@ import type { GraphBuilder } from "../graph/graph-builder.js";
 import type { CodeEndpoint, CodeFunction, EndpointType, NodeLanguage } from "../model/code-graph.js";
 import type { ParserOptions } from "../model/parser-options.js";
 import { endpointId } from "../parser/node-id.js";
-import { normalizeHttpPath } from "../util/string-utils.js";
 import { resolveStaticExtractPresetRules } from "./static-extract-presets.js";
 
 interface AddEndpointOptions {
@@ -54,9 +53,10 @@ export class StaticExtractEndpointProvider {
       });
 
       for (const fact of report.results) {
-        if (isUiActionFact(fact)) {
-          this.addUiActionFact(graph, input, fact);
-        } else if (isHttpFact(fact)) {
+        // UI actions are not graph endpoints. The Java engine intentionally has
+        // no UI endpoint subtype, so emitting one would make GraphDelta fail to
+        // deserialize at the process-adapter boundary.
+        if (isHttpFact(fact)) {
           this.addHttpEndpointFact(graph, input, fact);
         } else if (isGenericEndpointFact(fact)) {
           this.addGenericEndpointFact(graph, input, fact);
@@ -94,7 +94,9 @@ export class StaticExtractEndpointProvider {
 
       const ruleBodies: string[] = [...presetRules, ...(options.ruleTexts ?? [])];
       for (const source of options.ruleSources ?? []) {
-        ruleBodies.push(await readFile(source, "utf8"));
+        // Process protocol compatibility: remote callers historically used
+        // ruleSources for both file paths and inline SER documents.
+        ruleBodies.push(looksLikeSerDocument(source) ? source : await readFile(source, "utf8"));
       }
 
       // Standalone trace docs (legacy CLI/options) → embedded entries; full `rule ` docs → rules.
@@ -159,9 +161,8 @@ export class StaticExtractEndpointProvider {
 
     const method = normalizeHttpMethod(fact.fields.method, fact.fields.client);
     if (!isKnownHttpMethod(method)) return;
-    // Do not re-normalize identity already fixed by dict (same as Java mapper).
-    const normalizedPath =
-      parseLevel === "config" ? pathValue : normalizeHttpPath(pathValue);
+    // static-extract/SER owns endpoint identity; graph mapping is lossless.
+    const normalizedPath = pathValue;
     const matchIdentity = `HTTP:${method}:${normalizedPath}`;
     const projectFilePath = fact.projectFilePath;
     const language = languageOf(projectFilePath);
@@ -210,72 +211,6 @@ export class StaticExtractEndpointProvider {
       fromNodeId: direction === "inbound" ? id : linkedFunction.id,
       toNodeId: direction === "inbound" ? linkedFunction.id : id,
       relationshipType: direction === "inbound" ? "ENDPOINT_TO_FUNCTION" : "FUNCTION_TO_ENDPOINT",
-      language,
-      lineNumber: line,
-      confidence: "inferred",
-      attributes: {
-        source: "static-extract",
-        rule: fact.rule
-      }
-    });
-  }
-
-  private addUiActionFact(graph: GraphBuilder, input: AddEndpointOptions, fact: StaticExtractFact): void {
-    // Identity from static-extract fields only (no parser-side dict).
-    const text = fact.fields.text ?? fact.fields.label ?? fact.fields.name;
-    if (!text) return;
-    const parseLevel = resolveParseLevel(fact.fields);
-
-    const event = normalizeUiEvent(fact.fields.event);
-    const element = fact.fields.kind ?? fact.fields.element ?? fact.fields.component ?? "unknown";
-    const matchIdentity = `UI:${event.toUpperCase()}:${element}:${text}`;
-    const projectFilePath = fact.projectFilePath;
-    const language = languageOf(projectFilePath);
-    const line = fact.startLine;
-    const id = endpointId(input.projectName, projectFilePath, matchIdentity, line);
-    const handlerReference = resolveHandlerReference(fact);
-    const handler = findHandlerFunction(graph.graph.functions, projectFilePath, handlerReference);
-
-    graph.addEndpoint({
-      id,
-      name: text,
-      qualifiedName: id,
-      language,
-      projectFilePath,
-      gitRepoUrl: input.options.gitRepoUrl,
-      gitBranch: input.options.gitBranch,
-      startLine: line,
-      endLine: fact.endLine,
-      nodeKind: "endpoint",
-      subKind: "ui_action",
-      endpointType: "UI",
-      direction: "inbound",
-      isExternal: false,
-      parseLevel,
-      matchIdentity,
-      path: `${projectFilePath}#${element}:${text}`,
-      normalizedPath: `${element}:${text}`,
-      uiEvent: event,
-      uiElement: element,
-      uiText: text,
-      componentName: fact.fields.component,
-      other: fact.fields.other ?? null,
-      attributes: {
-        source: "static-extract",
-        rule: fact.rule,
-        factType: fact.factType,
-        fields: fact.fields,
-        handler: fact.fields.handler,
-        enclosingSymbol: fact.enclosingSymbol,
-        ...(fact.fields.pathKey ? { pathKey: fact.fields.pathKey } : {})
-      }
-    });
-
-    if (!handler) return;
-    graph.addRelationship({
-      fromNodeId: id,
-      toNodeId: handler.id,
-      relationshipType: "ENDPOINT_TO_FUNCTION",
       language,
       lineNumber: line,
       confidence: "inferred",
@@ -364,6 +299,11 @@ export class StaticExtractEndpointProvider {
       }
     });
   }
+}
+
+function looksLikeSerDocument(value: string): boolean {
+  const trimmed = value.trimStart();
+  return /^(?:rule\s+(?:"|')|rule\s+[A-Za-z_$]|trace\s*\{|fact\s+)/.test(trimmed) || value.includes("\n");
 }
 
 function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
@@ -522,12 +462,6 @@ function isNextPagesApiFile(filePath: string): boolean {
   return /(^|\/)pages\/api\/.+\.[cm]?[jt]sx?$/i.test(filePath);
 }
 
-function isUiActionFact(fact: StaticExtractFact): boolean {
-  return fact.factType === "ui_action" ||
-    fact.fields.endpointType?.toLowerCase() === "ui" ||
-    Boolean((fact.fields.text || fact.fields.label) && fact.fields.event);
-}
-
 function isGenericEndpointFact(fact: StaticExtractFact): boolean {
   const endpointType = normalizeEndpointType(fact.fields.endpointType ?? fact.fields.type);
   return endpointType === "MQ" || endpointType === "REDIS" || endpointType === "DB";
@@ -535,7 +469,7 @@ function isGenericEndpointFact(fact: StaticExtractFact): boolean {
 
 function normalizeEndpointType(value: string | undefined): EndpointType {
   const upper = (value ?? "").toUpperCase();
-  if (upper === "MQ" || upper === "REDIS" || upper === "DB" || upper === "HTTP" || upper === "UI") return upper;
+  if (upper === "MQ" || upper === "REDIS" || upper === "DB" || upper === "HTTP") return upper;
   return "UNKNOWN";
 }
 

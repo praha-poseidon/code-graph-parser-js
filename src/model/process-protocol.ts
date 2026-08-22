@@ -141,12 +141,7 @@ export interface JavaCodeEndpoint
     | "httpMethod"
     | "path"
     | "normalizedPath"
-    | "uiEvent"
-    | "uiElement"
-    | "uiText"
-    | "uiSelector"
     | "routePath"
-    | "componentName"
     | "topic"
     | "group"
     | "operation"
@@ -158,7 +153,7 @@ export interface JavaCodeEndpoint
     | "dbOperation"
     | "other"
   > {
-  endpointKind: "http" | "mq" | "redis" | "db" | "ui";
+  endpointKind: "http" | "mq" | "redis" | "db";
 }
 
 type JavaCodeRelationship = Pick<
@@ -176,11 +171,15 @@ export function toGraphDelta(input: {
   const id = createIdMapper(projectName);
   const scoped = Boolean(request.sourceFiles?.length);
   const units = graph.units.filter(isCoreUnit);
+  const endpoints = graph.endpoints.filter(isEngineEndpoint);
+  const excludedEndpointIds = new Set(
+    graph.endpoints.filter((endpoint) => !isEngineEndpoint(endpoint)).map((endpoint) => endpoint.id)
+  );
   const nodeIds = new Set<string>([
     ...graph.packages.map((pkg) => pkg.id),
     ...units.map((unit) => unit.id),
     ...graph.functions.map((fn) => fn.id),
-    ...graph.endpoints.map((endpoint) => endpoint.id)
+    ...endpoints.map((endpoint) => endpoint.id)
   ]);
   return {
     scope: {
@@ -196,8 +195,10 @@ export function toGraphDelta(input: {
     packages: graph.packages.map((pkg) => cleanPackage(pkg, projectName, id)),
     units: units.map((unit) => cleanUnit(unit, projectName, id)),
     functions: graph.functions.map((fn) => cleanFunction(fn, projectName, id)),
-    endpoints: graph.endpoints.map((endpoint) => cleanEndpoint(endpoint, projectName, id)),
+    endpoints: endpoints.map((endpoint) => cleanEndpoint(endpoint, projectName, id)),
     relationships: graph.relationships
+      .filter((relationship) =>
+        !excludedEndpointIds.has(relationship.fromNodeId) && !excludedEndpointIds.has(relationship.toNodeId))
       .filter((relationship) => isCoreRelationship(relationship, nodeIds, scoped))
       .map((relationship) => cleanRelationship(relationship, projectName, id)),
     deletedNodeIds: [],
@@ -207,7 +208,15 @@ export function toGraphDelta(input: {
 }
 
 function isCoreUnit(unit: CodeUnit): boolean {
-  return unit.nodeKind === "module" && unit.subKind === "source_file";
+  // The engine's CodeUnit model represents both source-file modules and declared
+  // types. Dropping class/interface units here leaves EXTENDS/IMPLEMENTS edges
+  // pointing at nodes that can never be persisted.
+  return unit.nodeKind === "module";
+}
+
+function isEngineEndpoint(endpoint: CodeEndpoint): boolean {
+  return endpoint.endpointType === "HTTP" || endpoint.endpointType === "MQ" ||
+    endpoint.endpointType === "REDIS" || endpoint.endpointType === "DB";
 }
 
 function isCoreRelationship(relationship: CodeRelationship, nodeIds: Set<string>, scoped = false): boolean {
@@ -307,12 +316,7 @@ function cleanEndpoint(endpoint: CodeEndpoint, projectName: string, id: IdMapper
     httpMethod: endpoint.httpMethod,
     path: endpoint.path,
     normalizedPath: endpoint.normalizedPath,
-    uiEvent: endpoint.uiEvent,
-    uiElement: endpoint.uiElement,
-    uiText: endpoint.uiText,
-    uiSelector: endpoint.uiSelector,
     routePath: endpoint.routePath,
-    componentName: endpoint.componentName,
     topic: endpoint.topic,
     // MQ consumer group metadata (aligned with Java MqEndpoint.group; not MATCHES identity).
     group: endpoint.group,
@@ -331,7 +335,6 @@ function endpointKind(endpoint: CodeEndpoint): JavaCodeEndpoint["endpointKind"] 
   if (endpoint.endpointType === "MQ") return "mq";
   if (endpoint.endpointType === "REDIS") return "redis";
   if (endpoint.endpointType === "DB") return "db";
-  if (endpoint.endpointType === "UI") return "ui";
   return "http";
 }
 

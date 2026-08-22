@@ -206,10 +206,117 @@ export class ReactCodeGraphParser {
       });
     }
 
+    this.addDeclaredTypeUnits(sourceFile, context, parentPackageId, language);
+    this.addTypeRelationships(sourceFile, context, language);
+
     const candidates = this.collectFunctionCandidates(sourceFile);
     for (const candidate of candidates) {
       const fn = this.addFunctionCandidate(sourceFile, context, moduleNodeId, language, candidate);
       this.parseFunctionBody(sourceFile, context, fn, candidate);
+    }
+  }
+
+  private addDeclaredTypeUnits(
+    sourceFile: SourceFile,
+    context: ParseContext,
+    parentPackageId: string | undefined,
+    language: NodeLanguage
+  ): void {
+    const declarations = [
+      ...sourceFile.getClasses(),
+      ...sourceFile.getInterfaces(),
+      ...sourceFile.getTypeAliases(),
+      ...sourceFile.getEnums()
+    ];
+    for (const declaration of declarations) {
+      const name = declaration.getName();
+      if (!name) continue;
+      const projectFilePath = relativeProjectPath(context.projectRoot, sourceFile.getFilePath());
+      const id = unitId(context.projectName, projectFilePath, name);
+      const unitType = Node.isClassDeclaration(declaration)
+        ? "class"
+        : Node.isInterfaceDeclaration(declaration)
+          ? "interface"
+          : Node.isEnumDeclaration(declaration)
+            ? "enum"
+            : "type_alias";
+      context.graph.addUnit({
+        id,
+        name,
+        qualifiedName: id,
+        language,
+        projectFilePath,
+        gitRepoUrl: context.options.gitRepoUrl,
+        gitBranch: context.options.gitBranch,
+        startLine: lineOf(sourceFile, declaration.getStart()),
+        endLine: lineOf(sourceFile, declaration.getEnd()),
+        nodeKind: "module",
+        subKind: unitType,
+        unitType,
+        modifiers: declaration.getModifiers().map((modifier) => modifier.getText()),
+        isAbstract: Node.isClassDeclaration(declaration) ? declaration.isAbstract() : undefined,
+        packageId: parentPackageId
+      });
+      if (parentPackageId) {
+        context.graph.addRelationship({
+          fromNodeId: parentPackageId,
+          toNodeId: id,
+          relationshipType: "PACKAGE_TO_UNIT",
+          language,
+          confidence: "exact"
+        });
+      }
+    }
+  }
+
+  private addTypeRelationships(sourceFile: SourceFile, context: ParseContext, language: NodeLanguage): void {
+    const addHeritage = (
+      declaration: import("ts-morph").ClassDeclaration | import("ts-morph").InterfaceDeclaration,
+      heritage: import("ts-morph").ExpressionWithTypeArguments,
+      relationshipType: "EXTENDS" | "IMPLEMENTS"
+    ): void => {
+      const from = resolveUnitDeclarationId(context, declaration);
+      const targetDeclaration = resolveHeritageDeclaration(heritage.getExpression());
+      const to = targetDeclaration ? resolveUnitDeclarationId(context, targetDeclaration) : undefined;
+      if (!targetDeclaration || !from || !to || from === to) return;
+      context.graph.addRelationship({
+        fromNodeId: from,
+        toNodeId: to,
+        relationshipType,
+        language,
+        lineNumber: lineOf(sourceFile, heritage.getStart()),
+        confidence: "exact"
+      });
+
+      for (const method of declaration.getMethods()) {
+        const baseMethod = methodsOf(targetDeclaration).find((candidate) => candidate.getName() === method.getName());
+        if (!baseMethod) continue;
+        const overriding = resolveFunctionDeclarationId(context, method);
+        const overridden = resolveFunctionDeclarationId(context, baseMethod);
+        if (overriding && overridden && overriding !== overridden) {
+          context.graph.addRelationship({
+            fromNodeId: overriding,
+            toNodeId: overridden,
+            relationshipType: "OVERRIDES",
+            language,
+            lineNumber: lineOf(sourceFile, method.getStart()),
+            confidence: "exact"
+          });
+        }
+      }
+    };
+
+    for (const declaration of sourceFile.getClasses()) {
+      const extended = declaration.getExtends();
+      if (extended) addHeritage(declaration, extended, "EXTENDS");
+      for (const implemented of declaration.getImplements()) {
+        addHeritage(declaration, implemented, "IMPLEMENTS");
+      }
+    }
+    for (const declaration of sourceFile.getInterfaces()) {
+      for (const extended of declaration.getExtends()) {
+        addHeritage(declaration, extended, "EXTENDS");
+      }
     }
   }
 
@@ -421,8 +528,11 @@ export class ReactCodeGraphParser {
     };
 
     context.graph.addFunction(fn);
+    const ownerNodeId = candidate.ownerUnitName
+      ? unitId(context.projectName, projectFilePath, candidate.ownerUnitName)
+      : moduleNodeId;
     context.graph.addRelationship({
-      fromNodeId: moduleNodeId,
+      fromNodeId: ownerNodeId,
       toNodeId: fn.id,
       relationshipType: "UNIT_TO_FUNCTION",
       language,
@@ -482,6 +592,23 @@ export class ReactCodeGraphParser {
     }
   }
 
+}
+
+function resolveHeritageDeclaration(expression: TsNode): TsNode | undefined {
+  const symbol = expression.getSymbol();
+  const resolved = symbol?.getAliasedSymbol() ?? symbol;
+  return resolved?.getDeclarations().find((declaration) =>
+    Node.isClassDeclaration(declaration) || Node.isInterfaceDeclaration(declaration)
+  );
+}
+
+function methodsOf(
+  declaration: TsNode
+): Array<import("ts-morph").MethodDeclaration | import("ts-morph").MethodSignature> {
+  if (Node.isClassDeclaration(declaration) || Node.isInterfaceDeclaration(declaration)) {
+    return declaration.getMethods();
+  }
+  return [];
 }
 
 function isSupportedSourceFile(filePath: string): boolean {
