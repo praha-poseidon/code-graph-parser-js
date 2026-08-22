@@ -15,21 +15,47 @@ export interface SymbolResolveContext {
   projectRoot: string;
 }
 
-export function resolveCallTargetId(context: SymbolResolveContext, call: CallExpression): string | undefined {
-  const expression = call.getExpression();
+export function resolveCallTargetIds(context: SymbolResolveContext, call: CallExpression): string[] {
+  return resolveCallableExpressionIds(context, call.getExpression());
+}
+
+export function resolveCallableExpressionIds(context: SymbolResolveContext, expression: TsNode): string[] {
+  if (Node.isParenthesizedExpression(expression) || Node.isAsExpression(expression) || Node.isNonNullExpression(expression)) {
+    return resolveCallableExpressionIds(context, expression.getExpression());
+  }
+  if (Node.isConditionalExpression(expression)) {
+    return unique([
+      ...resolveCallableExpressionIds(context, expression.getWhenTrue()),
+      ...resolveCallableExpressionIds(context, expression.getWhenFalse())
+    ]);
+  }
+  if (Node.isBinaryExpression(expression)) {
+    const operator = expression.getOperatorToken().getKind();
+    if (operator === SyntaxKind.BarBarToken || operator === SyntaxKind.QuestionQuestionToken || operator === SyntaxKind.AmpersandAmpersandToken) {
+      return unique([
+        ...resolveCallableExpressionIds(context, expression.getLeft()),
+        ...resolveCallableExpressionIds(context, expression.getRight())
+      ]);
+    }
+  }
   const symbol = Node.isPropertyAccessExpression(expression)
     ? expression.getNameNode().getSymbol()
     : expression.getSymbol();
-  if (!symbol) return undefined;
+  if (!symbol) return [];
+  const targets: string[] = [];
   for (const declaration of symbol.getDeclarations()) {
     if (Node.isBindingElement(declaration)) {
       const resolved = resolveBindingElementTarget(context, declaration);
-      if (resolved) return resolved;
+      if (resolved) targets.push(resolved);
     }
     const id = resolveFunctionDeclarationId(context, declaration);
-    if (id) return id;
+    if (id) targets.push(id);
   }
-  return undefined;
+  return unique(targets);
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 /**

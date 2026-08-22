@@ -15,13 +15,13 @@ The first implementation targets React projects written in JS, JSX, TS, or TSX. 
 ```bash
 npm install
 npm run build
-node dist/cli.js --project /path/to/react-app --out graph.json
+parser-js --project /path/to/react-app --out graph.json
 ```
 
 Optional endpoint rules:
 
 ```bash
-node dist/cli.js --project /path/to/react-app --rules ./endpoint-rules --out graph.json
+parser-js --project /path/to/react-app --rules ./endpoint-rules --out graph.json
 ```
 
 Endpoint SER is optional. With no SER rules or enabled presets, the parser still
@@ -35,7 +35,7 @@ Emit the Java engine `GraphDelta` protocol directly:
 直接输出 Java engine 使用的 `GraphDelta` 协议：
 
 ```bash
-node dist/cli.js --project /path/to/react-app --delta --out delta.json
+parser-js --project /path/to/react-app --delta --out delta.json
 ```
 
 Run as a `code-graph-parser-process` adapter:
@@ -43,7 +43,7 @@ Run as a `code-graph-parser-process` adapter:
 作为 `code-graph-parser-process` 外部解析器运行：
 
 ```bash
-node dist/cli.js --stdio
+parser-js --stdio
 ```
 
 Then configure the Java engine or app with:
@@ -52,7 +52,7 @@ Then configure the Java engine or app with:
 
 ```bash
 -Dcodegraph.parser.process.languages=typescript
--Dcodegraph.parser.process.typescript.command="node '/path/to/code-graph-parser-js/dist/cli.js' --stdio"
+-Dcodegraph.parser.process.typescript.command="/path/to/parser-js --stdio"
 ```
 
 When the Java app receives a `.ts` or `.tsx` file change, it infers `typescript`, sends a `ParseRequest` to this CLI, receives `GraphDelta`, and writes the graph through the configured storage adapter.

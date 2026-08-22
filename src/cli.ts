@@ -223,7 +223,7 @@ function requiredProjectRoot(request: ParseRequest): string {
   const fromOption = stringOption(request, "projectRoot");
   const projectRoot = request.projectRoot ?? fromOption;
   if (!projectRoot) {
-    throw new Error("ParseRequest.projectRoot is required for frontend-code-graph --stdio/--request");
+    throw new Error("ParseRequest.projectRoot is required for parser-js --stdio/--request");
   }
   return projectRoot;
 }
@@ -266,9 +266,9 @@ function readStdin(): Promise<string> {
 function printUsage(): void {
   process.stderr.write(
       `Usage:\n` +
-      `  frontend-code-graph --project <path> [--include <glob>] [--exclude <glob>] [--no-module-closure] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--out graph.json] [--delta]\n` +
-      `  frontend-code-graph --stdio\n` +
-      `  frontend-code-graph --request request.json [--out delta.json]\n`
+      `  parser-js --project <path> [--include <glob>] [--exclude <glob>] [--no-module-closure] [--static-extract-preset [name|all]] [--ser-rule <file>] [--ser-rule-text <text>] [--trace-rule <file>] [--trace-rule-text <text>] [--external-values <file>] [--out graph.json] [--delta]\n` +
+      `  parser-js --stdio\n` +
+      `  parser-js --request request.json [--out delta.json]\n`
   );
 }
 

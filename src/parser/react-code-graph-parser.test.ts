@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ReactCodeGraphParser } from "./react-code-graph-parser.js";
+import type { CodeGraph } from "../model/code-graph.js";
 import { toGraphDelta } from "../model/process-protocol.js";
 import { loadTypeScriptProject } from "../project/project-loader.js";
 
@@ -223,6 +224,44 @@ test("incremental parse discovers jsconfig path aliases", async () => {
   });
   assert.equal(result.graph.endpoints.length, 1);
   assert.equal(result.graph.endpoints[0]?.matchIdentity, "HTTP:GET:/api/alias-closure");
+});
+
+test("one-file incremental graph union is exactly equivalent to a full parse", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "incremental-equivalence-app" }),
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { moduleResolution: "bundler", baseUrl: "." },
+      include: ["src/**/*"]
+    }),
+    "src/api.ts": [
+      "export const URL = '/api/users';",
+      "export function saveUser() { return fetch(URL, { method: 'POST' }); }"
+    ].join("\n"),
+    "src/service.ts": [
+      "import { saveUser } from './api';",
+      "export function save() { return saveUser(); }"
+    ].join("\n"),
+    "src/page.ts": [
+      "import { save } from './service';",
+      "export function submit() { return save(); }"
+    ].join("\n")
+  });
+  const options = { projectRoot: root, staticExtractPresetRules: ["http-client"] };
+  const full = await new ReactCodeGraphParser().parse(options);
+  const files = ["src/api.ts", "src/service.ts", "src/page.ts"].map((file) => path.join(root, file));
+  const deltas = [];
+  for (const sourceFile of files) {
+    deltas.push((await new ReactCodeGraphParser().parse({ ...options, sourceFiles: [sourceFile] })).graph);
+  }
+
+  const union = {
+    packages: unionById(deltas.flatMap((graph) => graph.packages)),
+    units: unionById(deltas.flatMap((graph) => graph.units)),
+    functions: unionById(deltas.flatMap((graph) => graph.functions)),
+    relationships: unionById(deltas.flatMap((graph) => graph.relationships)),
+    endpoints: unionById(deltas.flatMap((graph) => graph.endpoints))
+  };
+  assert.deepEqual(canonicalGraph(union), canonicalGraph(full.graph));
 });
 
 test("converts parsed frontend graph to process GraphDelta protocol", async () => {
@@ -1563,6 +1602,78 @@ test("resolves tsconfig path aliases, hook wrapped handlers, class component han
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:POST:/api/alias-users"));
 });
 
+test("resolves conditional call targets and connect injected dispatch effects", async () => {
+  const root = createFixtureProject({
+    "package.json": JSON.stringify({ name: "redux-dispatch-app" }),
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { jsx: "react-jsx", moduleResolution: "bundler", baseUrl: "." },
+      include: ["src/**/*"]
+    }),
+    "src/model.ts": [
+      "export const user = {",
+      "  effects: {",
+      "    save(payload: unknown) { return payload; },",
+      "    cancel() { return undefined; }",
+      "  }",
+      "};"
+    ].join("\n"),
+    "src/page.tsx": [
+      "declare function connect(state: unknown, dispatch: unknown): (component: unknown) => unknown;",
+      "type Props = { save: (value?: unknown) => unknown; cancel: () => unknown };",
+      "const mapDispatch = (dispatch: any) => ({",
+      "  save: (payload: unknown) => dispatch.user.save(payload),",
+      "  cancel: () => dispatch.user.cancel()",
+      "});",
+      "export function Page({ save, cancel: onCancel }: Props) {",
+      "  const flag = true;",
+      "  (flag ? save : onCancel)();",
+      "  (save || onCancel)();",
+      "  (save ?? onCancel)();",
+      "  return null;",
+      "}",
+      "export function PropsPage(props: Props) {",
+      "  const { cancel: cancelFromProps } = props;",
+      "  props.save?.();",
+      "  cancelFromProps();",
+      "  return null;",
+      "}",
+      "export function dynamic(dispatch: any, model: string, effect: string) {",
+      "  return dispatch[model][effect]();",
+      "}",
+      "export const ConnectedPage = connect(null, mapDispatch)(Page);",
+      "export const ConnectedPropsPage = connect(null, mapDispatch)(PropsPage);"
+    ].join("\n")
+  });
+
+  const result = await new ReactCodeGraphParser().parse({ projectRoot: root });
+  const ids = {
+    page: "redux-dispatch-app#src/page.tsx::Page({ save, cancel: onCancel }: Props)",
+    propsPage: "redux-dispatch-app#src/page.tsx::PropsPage(props: Props)",
+    dynamic: "redux-dispatch-app#src/page.tsx::dynamic(dispatch: any,model: string,effect: string)",
+    save: "redux-dispatch-app#src/model.ts::user.effects.save(payload: unknown)",
+    cancel: "redux-dispatch-app#src/model.ts::user.effects.cancel()"
+  };
+  for (const caller of [ids.page, ids.propsPage]) {
+    assertGraphHasRelationship(result, "CALLS", caller, ids.save);
+    assertGraphHasRelationship(result, "CALLS", caller, ids.cancel);
+  }
+  assertGraphLacksRelationship(result, "CALLS", ids.dynamic, ids.save);
+  assertGraphLacksRelationship(result, "CALLS", ids.dynamic, ids.cancel);
+
+  const incremental = await new ReactCodeGraphParser().parse({
+    projectRoot: root,
+    sourceFiles: [path.join(root, "src/page.tsx")]
+  });
+  assert.ok(!incremental.graph.units.some((unit) => unit.projectFilePath === "src/model.ts"));
+  assert.ok(!incremental.graph.functions.some((fn) => fn.projectFilePath === "src/model.ts"));
+  for (const caller of [ids.page, ids.propsPage]) {
+    assertGraphHasRelationship(incremental, "CALLS", caller, ids.save);
+    assertGraphHasRelationship(incremental, "CALLS", caller, ids.cancel);
+  }
+  assertGraphLacksRelationship(incremental, "CALLS", ids.dynamic, ids.save);
+  assertGraphLacksRelationship(incremental, "CALLS", ids.dynamic, ids.cancel);
+});
+
 test.skip("extracts Next.js app route handlers as inbound HTTP endpoints", async () => {
   const root = createFixtureProject({
     "package.json": JSON.stringify({ name: "next-route-app" }),
@@ -2322,4 +2433,20 @@ function assertGraphLacksRelationship(
     ),
     `Unexpected relationship ${fromNodeId} -[${relationshipType}]-> ${toNodeId}`
   );
+}
+
+function unionById<T extends { id: string }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.id, item])).values()];
+}
+
+function canonicalGraph(graph: CodeGraph): CodeGraph {
+  const sort = <T extends { id: string }>(items: T[]): T[] =>
+    items.map((item) => JSON.parse(JSON.stringify(item)) as T).sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    packages: sort(graph.packages),
+    units: sort(graph.units),
+    functions: sort(graph.functions),
+    relationships: sort(graph.relationships),
+    endpoints: sort(graph.endpoints)
+  };
 }

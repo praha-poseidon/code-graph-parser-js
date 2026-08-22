@@ -21,16 +21,23 @@ import { ImportIndex } from "./import-index.js";
 import { directoryPackageId, functionId, moduleId, unitId } from "./node-id.js";
 import {
   buildSignature,
-  resolveCallTargetId,
+  resolveCallTargetIds,
   resolveFunctionDeclarationId,
   resolveUnitDeclarationId
 } from "../semantic/symbol-resolver.js";
+import {
+  buildDispatchBindingIndex,
+  dispatchTargetsForCall,
+  injectedTargetsForCall,
+  type DispatchBindingIndex
+} from "../semantic/redux-dispatch-resolver.js";
 
 interface ParseContext {
   projectName: string;
   projectRoot: string;
   graph: GraphBuilder;
   importIndex: ImportIndex;
+  dispatchBindings: DispatchBindingIndex;
   options: ParserOptions;
 }
 
@@ -98,6 +105,7 @@ export class ReactCodeGraphParser {
       projectRoot,
       graph: new GraphBuilder(),
       importIndex,
+      dispatchBindings: buildDispatchBindingIndex(morphProject ?? sourceFiles[0]?.getProject(), { projectName, projectRoot }),
       options
     };
 
@@ -573,13 +581,20 @@ export class ReactCodeGraphParser {
   }
 
   private parseCallExpression(sourceFile: SourceFile, context: ParseContext, currentFn: CodeFunction, call: CallExpression): void {
-    const calleeName = getCallName(call);
-    if (!calleeName) return;
-
     // HTTP endpoints come only from static-extract (SER), not a built-in rule engine.
 
-    const target = resolveCallTargetId(context, call) ?? resolveCallTarget(context, sourceFile, calleeName);
-    if (target && target !== currentFn.id) {
+    const callNames = getCallNames(call);
+    const targets = new Set<string>([
+      ...resolveCallTargetIds(context, call),
+      ...dispatchTargetsForCall(context.dispatchBindings, call),
+      ...injectedTargetsForCall(context.dispatchBindings, currentFn.id, callNames)
+    ]);
+    for (const calleeName of callNames) {
+      const fallback = resolveCallTarget(context, sourceFile, calleeName);
+      if (fallback) targets.add(fallback);
+    }
+    for (const target of targets) {
+      if (target === currentFn.id) continue;
       context.graph.addRelationship({
         fromNodeId: currentFn.id,
         toNodeId: target,
@@ -587,7 +602,7 @@ export class ReactCodeGraphParser {
         language: currentFn.language,
         lineNumber: lineOf(sourceFile, call.getStart()),
         callType: "direct",
-        confidence: target === calleeName ? "unresolved" : "inferred"
+        confidence: "inferred"
       });
     }
   }
@@ -669,11 +684,31 @@ function resolveFunctionId(context: ParseContext, sourceFile: SourceFile, functi
   return functionId(context.projectName, relativeProjectPath(context.projectRoot, sourceFile.getFilePath()), signature);
 }
 
-function getCallName(call: CallExpression): string | undefined {
-  const expression = call.getExpression();
-  if (Node.isIdentifier(expression)) return expression.getText();
-  if (Node.isPropertyAccessExpression(expression)) return expression.getText();
-  return undefined;
+function getCallNames(call: CallExpression): string[] {
+  return callableExpressionNames(call.getExpression());
+}
+
+function callableExpressionNames(expression: TsNode): string[] {
+  if (Node.isParenthesizedExpression(expression) || Node.isAsExpression(expression) || Node.isNonNullExpression(expression)) {
+    return callableExpressionNames(expression.getExpression());
+  }
+  if (Node.isConditionalExpression(expression)) {
+    return [...new Set([
+      ...callableExpressionNames(expression.getWhenTrue()),
+      ...callableExpressionNames(expression.getWhenFalse())
+    ])];
+  }
+  if (Node.isBinaryExpression(expression)) {
+    const operator = expression.getOperatorToken().getKind();
+    if (operator === SyntaxKind.BarBarToken || operator === SyntaxKind.QuestionQuestionToken || operator === SyntaxKind.AmpersandAmpersandToken) {
+      return [...new Set([
+        ...callableExpressionNames(expression.getLeft()),
+        ...callableExpressionNames(expression.getRight())
+      ])];
+    }
+  }
+  if (Node.isIdentifier(expression) || Node.isPropertyAccessExpression(expression)) return [expression.getText()];
+  return [];
 }
 
 function getObjectMethodName(property: import("ts-morph").PropertyAssignment): string | undefined {

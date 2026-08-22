@@ -36,11 +36,38 @@ export async function loadTypeScriptProject(options: ParserOptions): Promise<Loa
     moduleClosure: options.moduleClosure !== false,
     configFilePath: options.tsConfigPath
   });
+  // Redux/DVA model effects are commonly referenced through dispatch.<model>.<effect>
+  // without an import from the calling file. They are therefore outside a normal
+  // module closure. Incremental requests still need those declarations for exact
+  // CALLS targets, but they must not become part of SCAN/output.
+  const semanticSidecars = options.sourceFiles?.length
+    ? await discoverSemanticSidecars(options, new Set(closure.loadPaths.map((file) => path.resolve(file))))
+    : [];
+  if (semanticSidecars.length > 0) {
+    (closure.project as unknown as Project).addSourceFilesAtPaths(semanticSidecars);
+  }
   return {
     project: closure.project as unknown as Project,
-    loadPaths: closure.loadPaths,
+    loadPaths: [...new Set([...closure.loadPaths, ...semanticSidecars])].sort(),
     scanPaths: closure.scanPaths
   };
+}
+
+async function discoverSemanticSidecars(options: ParserOptions, loaded: Set<string>): Promise<string[]> {
+  const candidates = await scanSourceFiles(options);
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    const absolute = path.resolve(candidate);
+    if (loaded.has(absolute)) continue;
+    let source: string;
+    try {
+      source = fs.readFileSync(absolute, "utf8");
+    } catch {
+      continue;
+    }
+    if (/\beffects\s*[:=]/.test(source)) result.push(absolute);
+  }
+  return result.sort();
 }
 
 export async function scanSourceFiles(options: ParserOptions): Promise<string[]> {

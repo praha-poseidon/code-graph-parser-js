@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "moduleResolution": "bundler",
+    "baseUrl": "."
+  },
+  "include": ["src/**/*"]
+}

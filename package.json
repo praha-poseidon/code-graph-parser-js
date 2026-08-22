@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Static graph parser for React frontend projects.",
   "bin": {
-    "frontend-code-graph": "./dist/cli.js"
+    "parser-js": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
