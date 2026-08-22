@@ -15,9 +15,25 @@ export type RelationshipType =
   | "EXTENDS"
   | "IMPLEMENTS"
   | "OVERRIDES"
+  | "JS_EXTENDS"
+  | "JS_IMPLEMENTS"
+  | "JS_OVERRIDES"
+  | "TS_EXTENDS"
+  | "TS_IMPLEMENTS"
+  | "TS_OVERRIDES"
   | "FUNCTION_TO_ENDPOINT"
   | "ENDPOINT_TO_FUNCTION"
   | "MATCHES";
+
+export type RelationshipKind =
+  | "CALL"
+  | "CONTAINS"
+  | "SPECIALIZES"
+  | "CONFORMS"
+  | "REFINES"
+  | "RENDERS"
+  | "BINDS_ENDPOINT"
+  | "MATCHES_ENDPOINT";
 
 export type EndpointType = "HTTP" | "UI" | "UI_ROUTE" | "GRAPHQL" | "MQ" | "REDIS" | "DB" | "UNKNOWN";
 
@@ -97,6 +113,9 @@ export interface CodeRelationship {
   fromNodeId: string;
   toNodeId: string;
   relationshipType: RelationshipType;
+  relationshipKind: RelationshipKind;
+  fromNodeType: "CodePackage" | "CodeUnit" | "CodeFunction" | "CodeEndpoint";
+  toNodeType: "CodePackage" | "CodeUnit" | "CodeFunction" | "CodeEndpoint";
   lineNumber?: number;
   callType?: string;
   language: NodeLanguage;

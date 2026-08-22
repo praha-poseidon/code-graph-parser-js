@@ -69,10 +69,39 @@ export class GraphBuilder {
     confidence?: Confidence;
     attributes?: Record<string, unknown>;
   }): void {
-    const id = relationshipId(input);
+    const relationshipType = languageRelationshipType(input.relationshipType, input.language);
+    const contract = relationshipContract(relationshipType);
+    const relationship = { ...input, relationshipType, ...contract };
+    const id = relationshipId(relationship);
     if (this.relationshipIds.has(id)) return;
     this.relationshipIds.add(id);
-    this.graph.relationships.push({ id, ...input });
+    this.graph.relationships.push({ id, ...relationship });
+  }
+}
+
+function languageRelationshipType(type: RelationshipType, language: NodeLanguage): RelationshipType {
+  if (type !== "EXTENDS" && type !== "IMPLEMENTS" && type !== "OVERRIDES") return type;
+  const prefix = language === "typescript" ? "TS" : "JS";
+  return `${prefix}_${type}` as RelationshipType;
+}
+
+function relationshipContract(type: RelationshipType): Pick<CodeRelationship, "relationshipKind" | "fromNodeType" | "toNodeType"> {
+  switch (type) {
+    case "CALLS": return { relationshipKind: "CALL", fromNodeType: "CodeFunction", toNodeType: "CodeFunction" };
+    case "RENDERS": return { relationshipKind: "RENDERS", fromNodeType: "CodeFunction", toNodeType: "CodeFunction" };
+    case "PACKAGE_TO_UNIT": return { relationshipKind: "CONTAINS", fromNodeType: "CodePackage", toNodeType: "CodeUnit" };
+    case "PACKAGE_TO_PACKAGE": return { relationshipKind: "CONTAINS", fromNodeType: "CodePackage", toNodeType: "CodePackage" };
+    case "UNIT_TO_FUNCTION": return { relationshipKind: "CONTAINS", fromNodeType: "CodeUnit", toNodeType: "CodeFunction" };
+    case "JS_EXTENDS":
+    case "TS_EXTENDS": return { relationshipKind: "SPECIALIZES", fromNodeType: "CodeUnit", toNodeType: "CodeUnit" };
+    case "JS_IMPLEMENTS":
+    case "TS_IMPLEMENTS": return { relationshipKind: "CONFORMS", fromNodeType: "CodeUnit", toNodeType: "CodeUnit" };
+    case "JS_OVERRIDES":
+    case "TS_OVERRIDES": return { relationshipKind: "REFINES", fromNodeType: "CodeFunction", toNodeType: "CodeFunction" };
+    case "ENDPOINT_TO_FUNCTION": return { relationshipKind: "BINDS_ENDPOINT", fromNodeType: "CodeEndpoint", toNodeType: "CodeFunction" };
+    case "FUNCTION_TO_ENDPOINT": return { relationshipKind: "BINDS_ENDPOINT", fromNodeType: "CodeFunction", toNodeType: "CodeEndpoint" };
+    case "MATCHES": return { relationshipKind: "MATCHES_ENDPOINT", fromNodeType: "CodeEndpoint", toNodeType: "CodeEndpoint" };
+    default: throw new Error(`Missing relationship contract for ${type}`);
   }
 }
 

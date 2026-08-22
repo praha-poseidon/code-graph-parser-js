@@ -14,9 +14,12 @@ const CORE_RELATIONSHIP_TYPES = new Set<RelationshipType>([
   "UNIT_TO_FUNCTION",
   "CALLS",
   "RENDERS",
-  "EXTENDS",
-  "IMPLEMENTS",
-  "OVERRIDES",
+  "JS_EXTENDS",
+  "JS_IMPLEMENTS",
+  "JS_OVERRIDES",
+  "TS_EXTENDS",
+  "TS_IMPLEMENTS",
+  "TS_OVERRIDES",
   "ENDPOINT_TO_FUNCTION",
   "FUNCTION_TO_ENDPOINT",
   "MATCHES"
@@ -158,7 +161,8 @@ export interface JavaCodeEndpoint
 
 type JavaCodeRelationship = Pick<
   CodeRelationship,
-  "id" | "fromNodeId" | "toNodeId" | "relationshipType" | "lineNumber" | "callType" | "language" | "projectName"
+  "id" | "fromNodeId" | "toNodeId" | "relationshipType" | "relationshipKind" |
+  "fromNodeType" | "toNodeType" | "lineNumber" | "callType" | "language" | "projectName"
 >;
 
 export function toGraphDelta(input: {
@@ -344,6 +348,9 @@ function cleanRelationship(relationship: CodeRelationship, projectName: string, 
     fromNodeId: id.required(relationship.fromNodeId),
     toNodeId: id.required(relationship.toNodeId),
     relationshipType: relationship.relationshipType,
+    relationshipKind: relationship.relationshipKind,
+    fromNodeType: relationship.fromNodeType,
+    toNodeType: relationship.toNodeType,
     lineNumber: relationship.lineNumber,
     callType: relationship.callType,
     language: relationship.language,

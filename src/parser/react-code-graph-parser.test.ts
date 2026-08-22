@@ -1189,11 +1189,17 @@ test("resolves TypeScript symbols for calls and type relationships", async () =>
   assertGraphHasFunction(result, ids.interfaceSave);
   assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.userService, ids.save);
   assertGraphHasRelationship(result, "UNIT_TO_FUNCTION", ids.apiClient, ids.interfaceSave);
-  assertGraphHasRelationship(result, "EXTENDS", ids.userService, ids.baseService);
-  assertGraphHasRelationship(result, "IMPLEMENTS", ids.userService, ids.apiClient);
-  assertGraphLacksRelationship(result, "IMPLEMENTS", ids.userService, ids.wrongApiClient);
-  assertGraphHasRelationship(result, "OVERRIDES", ids.save, ids.interfaceSave);
+  assertGraphHasRelationship(result, "TS_EXTENDS", ids.userService, ids.baseService);
+  assertGraphHasRelationship(result, "TS_IMPLEMENTS", ids.userService, ids.apiClient);
+  assertGraphLacksRelationship(result, "TS_IMPLEMENTS", ids.userService, ids.wrongApiClient);
+  assertGraphHasRelationship(result, "TS_OVERRIDES", ids.save, ids.interfaceSave);
   assertGraphHasRelationship(result, "CALLS", ids.handleSave, ids.save);
+  for (const relationship of result.graph.relationships.filter((item) => item.relationshipType.startsWith("TS_"))) {
+    const override = relationship.relationshipType === "TS_OVERRIDES";
+    assert.equal(relationship.relationshipKind, override ? "REFINES" : relationship.relationshipType === "TS_IMPLEMENTS" ? "CONFORMS" : "SPECIALIZES");
+    assert.equal(relationship.fromNodeType, override ? "CodeFunction" : "CodeUnit");
+    assert.equal(relationship.toNodeType, override ? "CodeFunction" : "CodeUnit");
+  }
 
   assert.ok(!result.graph.endpoints.some((endpoint) => endpoint.endpointType === "UI"));
   assert.ok(result.graph.endpoints.some((endpoint) => endpoint.matchIdentity === "HTTP:POST:/api/users"));
